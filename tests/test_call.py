@@ -11,6 +11,7 @@ import io
 import itertools
 import json
 import math
+import random
 import sys
 import tempfile
 import unittest
@@ -165,6 +166,73 @@ class PloidyCorrectionTests(unittest.TestCase):
             [call.most_probable_dosage(posterior) for posterior in posteriors], posteriors, ploidy
         )
         self.assertLessEqual(log_probability(greedy), log_probability(exact) + 1e-12)
+
+
+def simulated_two_allele_markers(overdispersion, ploidy, markers, samples, genotypes="hwe", seed=11):
+    """Read counts ``[marker][sample][allele]`` drawn from the beta-binomial model.
+
+    ``genotypes`` is ``hwe`` (random mating) or ``inbred`` (every sample
+    homozygous).  The seed is fixed, so the counts are the same on every run.
+    """
+    generator = random.Random(seed)
+    table = []
+    for _ in range(markers):
+        frequency = generator.uniform(0.15, 0.85)
+        depths = []
+        for _ in range(samples):
+            if genotypes == "hwe":
+                dosage = sum(generator.random() < frequency for _ in range(ploidy))
+            else:
+                dosage = ploidy if generator.random() < frequency else 0
+            read_fraction = dosage / ploidy
+            if 0 < read_fraction < 1:
+                read_fraction = generator.betavariate(
+                    read_fraction * overdispersion, (1 - read_fraction) * overdispersion
+                )
+            marker_depth = generator.randint(20, 120)
+            alternate_depth = sum(generator.random() < read_fraction for _ in range(marker_depth))
+            depths.append([marker_depth - alternate_depth, alternate_depth])
+        table.append(depths)
+    return table
+
+
+class OverdispersionEstimateTests(unittest.TestCase):
+    def test_likelihood_of_one_sample_is_the_prior_weighted_average(self):
+        settings = call.ModelSettings(overdispersion=12)
+        frequency = 0.3
+        by_dosage = call.allele_log_likelihoods(7, 20, 4, frequency, settings)
+        expected = math.log(
+            sum(weight * math.exp(value) for weight, value in zip(call.hwe_prior(4, frequency), by_dosage))
+        )
+        # A second sample without reads adds nothing.
+        observed = call.log_likelihood_of_counts([[13, 7], [0, 0]], [4, 4], frequency, settings)
+        self.assertAlmostEqual(observed, expected, places=12)
+
+    def test_recovers_the_simulated_value_in_diploids_and_polyploids(self):
+        for ploidy in (2, 4, 6):
+            with self.subTest(ploidy=ploidy):
+                table = simulated_two_allele_markers(20, ploidy, markers=40, samples=60)
+                estimate = call.estimate_overdispersion(table, [ploidy] * 60)
+                self.assertIn(estimate.value, (16, 18, 20, 25))
+                self.assertIsNone(estimate.at_limit)
+                self.assertEqual(estimate.markers_used, 40)
+                self.assertEqual(max(estimate.log_likelihood, key=estimate.log_likelihood.get), estimate.value)
+
+    def test_inbred_samples_end_at_the_lowest_value(self):
+        # Without heterozygotes the counts say nothing about scatter, and the
+        # Hardy-Weinberg weights of the estimate do not fit.
+        table = simulated_two_allele_markers(20, 2, markers=30, samples=60, genotypes="inbred")
+        estimate = call.estimate_overdispersion(table, [2] * 60)
+        self.assertEqual((estimate.value, estimate.at_limit), (min(call.OVERDISPERSION_GRID), "lowest"))
+
+    def test_nothing_to_estimate_from(self):
+        estimate = call.estimate_overdispersion([[[0, 0], [0, 0]]], [2, 2])
+        self.assertIsNone(estimate.value)
+        self.assertIsNone(call.estimate_overdispersion([], [2, 2]).value)
+
+    def test_marker_subset_is_limited_and_evenly_spaced(self):
+        self.assertEqual(call._evenly_spaced(list(range(10)), 20), list(range(10)))
+        self.assertEqual(call._evenly_spaced(list(range(10)), 5), [0, 2, 4, 6, 8])
 
 
 class PolyradParityTests(unittest.TestCase):
@@ -655,6 +723,39 @@ class HaplotypeVcfTests(CommandTestCase):
 
 
 class CommandBehaviourTests(CommandTestCase):
+    def madc_from_simulation(self, table):
+        rows = []
+        for number, depths in enumerate(table):
+            marker = f"M{number:03d}"
+            rows.append((marker, "Ref", REF_TAG, [pair[0] for pair in depths]))
+            rows.append((marker, "Alt", ALT_TAG, [pair[1] for pair in depths]))
+        return self.write_madc(rows, [f"s{sample:02d}" for sample in range(len(table[0]))])
+
+    def test_overdispersion_auto_is_estimated_and_recorded(self):
+        madc = self.madc_from_simulation(simulated_two_allele_markers(20, 4, markers=40, samples=60))
+        prefix = self.call(madc, "--ploidy", "4", "--overdispersion", "auto")
+        report = self.qc["overdispersion"]
+        self.assertEqual(report["requested"], "auto")
+        self.assertIn(report["used"], (16, 18, 20, 25))
+        self.assertEqual(report["used"], report["estimate"])
+        self.assertEqual(report["markers_used"], 40)
+        self.assertIn("Estimated overdispersion", self.stderr)
+        header = self.vcf(prefix, "target")[0]
+        model_line = next(line for line in header if line.startswith("##madcatsModel="))
+        self.assertIn(f"overdispersion {report['used']:g}, estimated from the read counts", model_line)
+
+        self.call(madc, "--ploidy", "4", "--overdispersion", "30")
+        self.assertEqual(self.qc["overdispersion"], {"requested": 30.0, "used": 30.0})
+
+    def test_overdispersion_auto_falls_back_for_inbred_samples(self):
+        table = simulated_two_allele_markers(20, 2, markers=30, samples=60, genotypes="inbred")
+        prefix = self.call(self.madc_from_simulation(table), "--overdispersion", "auto")
+        report = self.qc["overdispersion"]
+        self.assertEqual((report["at_limit"], report["used"]), ("lowest", call.DEFAULT_OVERDISPERSION))
+        self.assertIn("Hardy-Weinberg", self.stderr)
+        model_line = next(line for line in self.vcf(prefix, "target")[0] if line.startswith("##madcatsModel="))
+        self.assertNotIn("estimated from the read counts", model_line)
+
     def test_parallel_run_writes_the_same_files(self):
         rows = []
         for number in range(12):

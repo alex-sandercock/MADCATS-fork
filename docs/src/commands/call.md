@@ -123,16 +123,32 @@ get haplotype records and off-target records.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--prior {uniform,hwe}` | `hwe` | Genotype prior (see [the genotype model](#the-genotype-model)) |
-| `--overdispersion <FLOAT>` | 9 | Beta-binomial overdispersion parameter, as in polyRAD. Lower values allow read fractions to stray further from the expected fraction |
+| `--overdispersion <FLOAT\|auto>` | 9 | Beta-binomial overdispersion parameter, as in polyRAD. Lower values allow read fractions to stray further from the expected fraction. `auto` estimates it from the read counts (see below) |
 | `--contamination-rate <FLOAT>` | 0.001 | Expected share of a sample's reads that come from other samples |
 | `--tol <FLOAT>` | 1e-5 | With `--prior hwe`, stop iterating a record once its allele frequencies change by no more than this on average |
 | `--max-iterations <INT>` | 100 | With `--prior hwe`, the most iterations a record may take |
 
+### Choosing the overdispersion
+
 `--overdispersion` matters most in polyploids, where neighbouring dosages differ by a small read
 fraction. The default of 9 is polyRAD's, chosen for RAD-seq. On simulated amplicon counts without
-extra noise it left most tetraploid and hexaploid genotypes below the confidence thresholds, while
-values of 50–200 called them accurately. If you call polyploids, estimate the value for your data
-(for example with polyRAD's `TestOverdispersion`) and pass it here.
+extra scatter it left most tetraploid and hexaploid genotypes below the confidence thresholds,
+while the value estimated from the data called them accurately.
+
+`--overdispersion auto` estimates the value by maximum likelihood. For each value on a grid from 2
+to 500, it adds up the log-likelihood of every marker's reference and alternate read counts, with
+each sample's genotype summed out under Hardy-Weinberg proportions, and takes the value with the
+highest total. It uses up to 20,000 sample-by-marker cells, from markers at even spacing through
+the table, and takes a few seconds. The value used, and the log-likelihood of every value tried,
+are in the QC JSON; the VCF header states the value and that it was estimated.
+
+- The estimate assumes Hardy-Weinberg proportions. On simulated F1 families it came out up to 1.5
+  times the true value. On inbred lines, which have no heterozygotes to measure scatter from, it
+  ends at the lowest value tried; `call` then warns and uses 9 instead.
+- When it is the highest value tried (500), the counts scatter no more than random sampling of
+  reads would.
+- This is not polyRAD's `TestOverdispersion`, which on simulated tetraploid and hexaploid counts
+  chose values well below the true one.
 
 ## Filters
 

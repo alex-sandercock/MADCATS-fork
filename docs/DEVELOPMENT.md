@@ -1560,6 +1560,92 @@ bases it is found at `best_n` 50. bwa agreement is concordance, not truth:
 source-known fixtures for both errors (target evidence removed, paralog
 evidence kept) are still to be built.
 
+## Genotype calling (`call`, unreleased)
+
+`madcats call` (in `madcats_call.py`) calls genotypes from a MADC and writes
+VCFs. The model is adapted from polyRAD 2.0.1: a beta-binomial likelihood of
+each allele's read count against the rest of the record, a uniform or
+Hardy-Weinberg prior, and (for `hwe`) iteration of the allele frequencies.
+Only the parts needed for this were adapted. polyRAD's population-structure,
+linkage and mapping-population priors, its ploidy tests and its import and
+export code were not.
+
+**Differences from polyRAD.**
+
+- Likelihoods are kept as logarithms. polyRAD exponentiates them and sets a
+  sample's likelihoods to 1 when they all underflow to 0.
+- Each record iterates until its own allele frequencies settle. polyRAD stops
+  all loci together on their mean change.
+- There is an iteration limit (`--max-iterations`).
+- Ties between dosages, and corrections with no possible step, give a missing
+  genotype.
+
+**Agreement with polyRAD.** `scripts/make_polyrad_fixture.R` runs polyRAD on
+three simulated loci (2, 3 and 4 alleles; 16 samples of ploidy 2, 3, 4 and 6)
+and stores the values in `tests/fixtures/polyrad_parity.json`:
+
+| Compared | Agreement |
+|---|---|
+| Likelihoods, priors and posteriors from the same starting frequencies | 9 or more decimal places |
+| Allele frequencies and posteriors after `IterateHWE(tol = 1e-10)` | 7 decimal places |
+| Genotypes after the correction to the ploidy | identical (144 sample-by-allele values) |
+
+**Correction to the ploidy.** With more than two alleles the most probable
+dosage of each allele is found separately, and the dosages need not add up to
+the ploidy. polyRAD adds or removes one copy at a time. An exact search for
+the dosages with the highest product of posteriors
+(`best_dosages_summing_to_ploidy`) gave the same genotype in all 4,104
+corrected genotypes of a simulation (hexaploid, five alleles, 40 markers, 200
+samples, 20–200 reads), where 51% of genotypes needed correcting. `call` uses
+polyRAD's method and counts in the QC JSON how often the exact search differs.
+
+**Overdispersion.** polyRAD's default of 9 allows more scatter in read
+fractions than the gap between neighbouring polyploid dosages. On a simulated
+mixed-ploidy table without extra scatter (500 markers, 300 samples, target
+records, defaults otherwise):
+
+| `--overdispersion` | 2x called / correct | 4x called / correct | 6x called / correct |
+|---|---|---|---|
+| 9 | 93.1% / 99.83% | 11.4% / 83.71% | 2.5% / 65.46% |
+| 50 | 97.6% / 99.98% | 76.7% / 99.63% | 11.1% / 99.25% |
+| 200 | 97.7% / 99.98% | 86.2% / 99.39% | 51.5% / 98.70% |
+| `auto` (chose 300) | 97.7% / 99.98% | 86.9% / 99.33% | 55.2% / 98.34% |
+
+`--overdispersion auto` is a maximum-likelihood estimate over a grid
+(`estimate_overdispersion`). polyRAD's `TestOverdispersion` was ported first
+and reproduced polyRAD's scores to four decimal places on three simulated
+tables, but both chose 10 for a tetraploid table simulated with 50 and 4 for a
+hexaploid table simulated with 20 (and 25 for a diploid table simulated with
+20). It tests the read counts of samples that a rough estimate assigns one
+allele copy, and in polyploids that estimate is wrong often enough to make the
+counts look more scattered than they are. The port was dropped. The
+maximum-likelihood estimate, on 200 simulated markers and 150 samples per
+case, with the simulated value in the first column:
+
+| Simulated | 2x | 4x | 6x | mixed 2x/4x/6x | 4x, 8–40 reads | 4x F1 | 6x F1 | 2x inbred |
+|---|---|---|---|---|---|---|---|---|
+| 5 | 5 | 5 | 5 | 5 | 5 | 6 | 7 | 2 |
+| 10 | 10 | 10 | 10 | 10 | 10 | 12 | 14 | 2 |
+| 20 | 20 | 20 | 20 | 18 | 20 | 25 | 30 | 2 |
+| 50 | 50 | 50 | 50 | 50 | 50 | 50 | 75 | 2 |
+| none (binomial) | 500 | 500 | 500 | 500 | 500 | 500 | 500 | 2 |
+
+Inbred lines have no heterozygotes to measure scatter from and do not fit the
+Hardy-Weinberg weights, so the estimate ends at the lowest value; `call` then
+warns and uses 9. These are simulations. The estimate has not yet been checked
+on real panels.
+
+**Contamination as the only error allowance.** With the default contamination
+rate of 0.001, a diploid with 10 Ref reads and 1 Alt read is called
+heterozygous: a read of an allele the sample does not carry can only come from
+contamination. This is polyRAD's behaviour.
+
+**Other checks.** On the bundled example all 96 target and 96 haplotype
+genotypes equal the simulated truth. `bcftools view` reads the three VCF types
+without warnings, including mixed-ploidy output. Output is identical for any
+`--jobs`. The simulated table above took 63 s on one core and 17 s on four for
+all three VCF types.
+
 ## Downstream fixed allele IDs
 
 This pipeline's responsibility ends with generation of the raw MADC-like

@@ -55,7 +55,7 @@ usable value at any read depth.
 Reading map: the model (``allele_log_likelihoods``, ``hwe_prior``,
 ``dosage_posterior``, ``call_marker``); from marginal posteriors to one
 genotype (``correct_dosages_to_ploidy``, ``best_dosages_summing_to_ploidy``);
-input (``read_count_table``, ``read_ploidy_table``); what each VCF type counts
+the overdispersion estimate (``estimate_overdispersion``); input (``read_count_table``, ``read_ploidy_table``); what each VCF type counts
 (``resolve_target``, ``RowReading``, ``process_marker``); VCF text
 (``format_record``, ``vcf_header``); the command line (``run_call``,
 ``add_call_command``).
@@ -527,6 +527,143 @@ def best_dosages_summing_to_ploidy(posteriors: Sequence[Sequence[float]], ploidy
 
 
 # ---------------------------------------------------------------------------
+# Estimating the overdispersion from the data
+# ---------------------------------------------------------------------------
+
+# Values tried by ``estimate_overdispersion``.  Steps widen as the values grow, because
+# the beta-binomial changes less and less as it approaches the binomial.
+OVERDISPERSION_GRID = (2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 25, 30, 40, 50, 75, 100, 150, 200, 300, 500)
+# The estimate uses at most this many sample-by-marker cells, from markers taken at even
+# spacing through the table, so that it stays quick and the same table always gives the
+# same value.
+OVERDISPERSION_MAX_CELLS = 20000
+OVERDISPERSION_MIN_MARKERS = 20
+OVERDISPERSION_MAX_ROUNDS = 4
+
+
+@dataclasses.dataclass
+class OverdispersionEstimate:
+    """Result of ``estimate_overdispersion``.
+
+    ``value`` is the chosen overdispersion, or None when no marker had reads.
+    ``log_likelihood`` maps every value tried to the log-likelihood of the
+    read counts under it, in the last round.  ``at_limit`` is ``"lowest"`` or
+    ``"highest"`` when the chosen value is an end of the grid, so the best
+    value may lie beyond it.  ``values_by_round`` is the value chosen in each
+    round, and ``markers_used`` the number of markers the estimate is based on.
+    """
+
+    value: Optional[float]
+    log_likelihood: Dict[float, float]
+    markers_used: int
+    values_by_round: List[float]
+    at_limit: Optional[str] = None
+
+
+def log_likelihood_of_counts(
+    depths: Sequence[Sequence[int]],
+    ploidies: Sequence[int],
+    alternate_frequency: float,
+    settings: ModelSettings,
+) -> float:
+    """Log-likelihood of one two-allele marker's read counts, with the genotypes summed out.
+
+    depths: ``[sample][allele]`` read counts of the reference and alternate allele.
+
+    A sample's genotype is unknown, so the probability of its counts is the
+    average over the possible dosages of the alternate allele, weighted by
+    their Hardy-Weinberg probabilities.  The samples' logs are added.
+    """
+    likelihood_frequency = frequency_for_likelihood(alternate_frequency, len(depths))
+    priors = {ploidy: hwe_prior(ploidy, alternate_frequency) for ploidy in set(ploidies)}
+    total = 0.0
+    for (reference_depth, alternate_depth), ploidy in zip(depths, ploidies):
+        marker_depth = reference_depth + alternate_depth
+        if marker_depth == 0:
+            continue
+        log_terms = [
+            log_likelihood + math.log(probability)
+            for log_likelihood, probability in zip(
+                allele_log_likelihoods(alternate_depth, marker_depth, ploidy, likelihood_frequency, settings),
+                priors[ploidy],
+            )
+            if probability > 0.0
+        ]
+        largest = max(log_terms)
+        if largest == NEGATIVE_INFINITY:
+            continue
+        total += largest + math.log(sum(math.exp(term - largest) for term in log_terms))
+    return total
+
+
+def _evenly_spaced(items: Sequence, limit: int) -> List:
+    """At most ``limit`` of the items, taken at even spacing."""
+    if len(items) <= limit:
+        return list(items)
+    return [items[index * len(items) // limit] for index in range(limit)]
+
+
+def estimate_overdispersion(
+    depths_by_marker: Sequence[Sequence[Sequence[int]]],
+    ploidies: Sequence[int],
+    contamination_rate: float = DEFAULT_CONTAMINATION_RATE,
+    grid: Sequence[float] = OVERDISPERSION_GRID,
+    start: float = DEFAULT_OVERDISPERSION,
+) -> OverdispersionEstimate:
+    """Choose the overdispersion that makes the observed read counts most probable.
+
+    depths_by_marker: ``[marker][sample][allele]`` read counts of two alleles
+        per marker (the reference-type and alternate-type rows).
+
+    For every value in ``grid`` the log-likelihood of the counts is added up
+    over the markers (``log_likelihood_of_counts``), and the value with the
+    highest total is chosen.  The allele frequencies that the likelihood
+    needs are estimated by the genotype model under the current value, so
+    the search is repeated with the chosen value until the choice no longer
+    changes; the frequencies depend little on the overdispersion, and this
+    usually takes two rounds.
+
+    This is a maximum-likelihood estimate.  polyRAD's ``TestOverdispersion``
+    instead tests the read counts of samples that a rough genotype estimate
+    assigns one allele copy.  That works in diploids, but in polyploids the
+    rough estimate assigns the wrong dosage often enough that the counts look
+    more scattered than they are (see docs/DEVELOPMENT.md).
+    """
+    samples_with_reads = [
+        sum(1 for sample_depths in depths if sum(sample_depths) > 0) for depths in depths_by_marker
+    ]
+    usable = [depths for depths, count in zip(depths_by_marker, samples_with_reads) if count > 0]
+    if not usable:
+        return OverdispersionEstimate(None, {}, 0, [])
+    marker_limit = max(OVERDISPERSION_MIN_MARKERS, OVERDISPERSION_MAX_CELLS // max(1, len(ploidies)))
+    markers = _evenly_spaced(usable, marker_limit)
+
+    current = start
+    values_by_round: List[float] = []
+    log_likelihood: Dict[float, float] = {}
+    for _ in range(OVERDISPERSION_MAX_ROUNDS):
+        frequency_settings = ModelSettings(overdispersion=current, contamination_rate=contamination_rate)
+        alternate_frequencies = [
+            call_marker(depths, ploidies, frequency_settings).allele_frequencies[1] for depths in markers
+        ]
+        log_likelihood = {}
+        for value in grid:
+            settings = ModelSettings(overdispersion=value, contamination_rate=contamination_rate)
+            log_likelihood[value] = sum(
+                log_likelihood_of_counts(depths, ploidies, frequency, settings)
+                for depths, frequency in zip(markers, alternate_frequencies)
+            )
+        best = max(grid, key=lambda value: log_likelihood[value])
+        values_by_round.append(best)
+        if best == current:
+            break
+        current = best
+    chosen = values_by_round[-1]
+    at_limit = "lowest" if chosen == min(grid) else "highest" if chosen == max(grid) else None
+    return OverdispersionEstimate(chosen, log_likelihood, len(markers), values_by_round, at_limit)
+
+
+# ---------------------------------------------------------------------------
 # Input: the MADC count table and the ploidy table
 # ---------------------------------------------------------------------------
 
@@ -749,6 +886,26 @@ def _summed_counts(counts_by_row: Sequence[Sequence[int]], row_indices: Sequence
     return totals
 
 
+def target_allele_depths(
+    rows: Sequence[MadcRow], counts_by_row: Sequence[Sequence[int]], sample_count: int
+) -> Tuple[List[List[int]], List[int]]:
+    """Reads for and against the designed variant, and the reads that show neither.
+
+    Returns ``[sample][allele]`` depths of the reference allele (Ref and
+    RefMatch rows) and the alternate allele (Alt and AltMatch rows), and the
+    per-sample depth of every other row.
+    """
+    reference_rows = [index for index, row in enumerate(rows) if row.category in REFERENCE_CATEGORIES]
+    alternate_rows = [index for index, row in enumerate(rows) if row.category in ALTERNATE_CATEGORIES]
+    other_rows = [
+        index for index, row in enumerate(rows) if row.category not in REFERENCE_CATEGORIES + ALTERNATE_CATEGORIES
+    ]
+    reference_depth = _summed_counts(counts_by_row, reference_rows, sample_count)
+    alternate_depth = _summed_counts(counts_by_row, alternate_rows, sample_count)
+    depths = [list(pair) for pair in zip(reference_depth, alternate_depth)]
+    return depths, _summed_counts(counts_by_row, other_rows, sample_count)
+
+
 def _without_negative_cells(rows: Sequence[MadcRow], sample_count: int) -> Tuple[List[List[int]], int]:
     """The rows' counts with every sample that has a negative count at the marker set to zero.
 
@@ -783,6 +940,7 @@ class CallOptions:
     min_marginal_posterior: float = DEFAULT_MIN_MARGINAL_POSTERIOR
     max_other_fraction: Optional[float] = None
     gap_band: int = GAP_BAND_DEFAULT
+    overdispersion_estimated: bool = False
 
 
 def _decimal(value: float, places: int = 4) -> str:
@@ -1009,19 +1167,10 @@ def process_marker(task: MarkerTask, ploidies: Sequence[int], options: CallOptio
             for vcf_type in site_types:
                 output.tallies[(vcf_type, f"targets_skipped_{skip_reason}")] += 1
         else:
-            reference_rows = [index for index, row in enumerate(rows) if row.category in REFERENCE_CATEGORIES]
-            alternate_rows = [index for index, row in enumerate(rows) if row.category in ALTERNATE_CATEGORIES]
-            other_rows = [
-                index for index, row in enumerate(rows)
-                if row.category not in REFERENCE_CATEGORIES + ALTERNATE_CATEGORIES
-            ]
-            reference_depth = _summed_counts(counts_by_row, reference_rows, sample_count)
-            alternate_depth = _summed_counts(counts_by_row, alternate_rows, sample_count)
+            depths, other_depths = target_allele_depths(rows, counts_by_row, sample_count)
             line, tallies = format_record(
                 task.clone_id, target.position, task.clone_id, [target.ref_allele, target.alt_allele],
-                [list(pair) for pair in zip(reference_depth, alternate_depth)],
-                _summed_counts(counts_by_row, other_rows, sample_count),
-                ploidies, options, two_allele_model=True, is_target=True,
+                depths, other_depths, ploidies, options, two_allele_model=True, is_target=True,
             )
             for vcf_type in site_types:
                 add(vcf_type, line, tallies)
@@ -1152,8 +1301,9 @@ def _haplotype_record(
     return line, tallies, allele_table
 
 
-def model_description(settings: ModelSettings) -> str:
+def model_description(settings: ModelSettings, overdispersion_estimated: bool = False) -> str:
     """One sentence stating the genotype model and its inheritance assumption, for the VCF header."""
+    source = ", estimated from the read counts" if overdispersion_estimated else ""
     if settings.prior == PRIOR_HWE:
         prior = (
             "Hardy-Weinberg prior with one allele frequency per record estimated over all samples together; "
@@ -1163,7 +1313,7 @@ def model_description(settings: ModelSettings) -> str:
     else:
         prior = "uniform prior over dosages"
     return (
-        f"beta-binomial read-count likelihood (overdispersion {settings.overdispersion:g}, contamination rate "
+        f"beta-binomial read-count likelihood (overdispersion {settings.overdispersion:g}{source}, contamination rate "
         f"{settings.contamination_rate:g}) adapted from polyRAD; {prior}"
     )
 
@@ -1180,7 +1330,7 @@ def vcf_header(
         f"##madcatsVcfType={vcf_type}",
         "##madcatsCoordinates=marker-local: CHROM is a marker (CloneID) and POS is a 1-based position on its "
         "Ref tag. These are not genome coordinates.",
-        f"##madcatsModel={model_description(options.settings)}",
+        f"##madcatsModel={model_description(options.settings, options.overdispersion_estimated)}",
         f"##madcatsFilters=min_dp={options.min_depth}, min_gq={options.min_genotype_quality}, "
         f"min_marginal_posterior={options.min_marginal_posterior:g}, "
         f"max_other_fraction={other_fraction}"
@@ -1243,6 +1393,67 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+OVERDISPERSION_AUTO = "auto"
+
+
+def _overdispersion_argument(value: str):
+    return OVERDISPERSION_AUTO if value.strip().lower() == OVERDISPERSION_AUTO else _positive_float(value)
+
+
+def choose_overdispersion(
+    tasks: Sequence[MarkerTask], ploidies: Sequence[int], contamination_rate: float
+) -> Tuple[float, Dict[str, object]]:
+    """Estimate the overdispersion for ``--overdispersion auto``.
+
+    Returns the value to use and a report for the QC JSON.  The estimate is
+    made from each marker's reference-type and alternate-type read counts.
+    It falls back to the default when there is nothing to estimate from, or
+    when the best value is the lowest one tried: that is what a table of
+    inbred lines or another sample set far from Hardy-Weinberg proportions
+    produces, whatever its real read-count scatter.
+    """
+    sample_count = len(ploidies)
+    depths_by_marker = []
+    for task in tasks:
+        rows = [row for row in task.rows if row.sequence]
+        if not any(row.category in ALTERNATE_CATEGORIES for row in rows):
+            continue
+        counts_by_row, _ = _without_negative_cells(rows, sample_count)
+        depths_by_marker.append(target_allele_depths(rows, counts_by_row, sample_count)[0])
+    estimate = estimate_overdispersion(depths_by_marker, ploidies, contamination_rate)
+    report: Dict[str, object] = {
+        "estimate": estimate.value,
+        "markers_used": estimate.markers_used,
+        "values_by_round": estimate.values_by_round,
+        "at_limit": estimate.at_limit,
+        "log_likelihood_by_value": {
+            format(value, "g"): round(total, 3) for value, total in estimate.log_likelihood.items()
+        },
+    }
+    if estimate.value is None:
+        print(
+            f"warning: no marker has reads to estimate the overdispersion from; using {DEFAULT_OVERDISPERSION:g}",
+            file=sys.stderr,
+        )
+        return DEFAULT_OVERDISPERSION, report
+    if estimate.at_limit == "lowest":
+        print(
+            f"warning: the overdispersion estimate is the lowest value tried ({estimate.value:g}). The samples "
+            "probably do not follow Hardy-Weinberg proportions (inbred lines, or one family), which the estimate "
+            f"assumes. Using {DEFAULT_OVERDISPERSION:g}; set --overdispersion to a number to choose it yourself.",
+            file=sys.stderr,
+        )
+        return DEFAULT_OVERDISPERSION, report
+    limit_note = ""
+    if estimate.at_limit == "highest":
+        limit_note = "; this is the highest value tried, so the counts scatter no more than random sampling of reads"
+    print(
+        f"Estimated overdispersion: {estimate.value:g} (from {estimate.markers_used:,} markers{limit_note})",
+        file=sys.stderr,
+    )
+    return float(estimate.value), report
+
+
 def _contamination_rate(value: str) -> float:
     parsed = float(value)
     if not 0 <= parsed < 1:
@@ -1257,21 +1468,6 @@ def run_call(args: argparse.Namespace) -> int:
         raise MadcError(f"MADC not found: {madc}")
     started = time.time()
     vcf_types = tuple(vcf_type for vcf_type in VCF_TYPES if vcf_type in args.vcf)
-    options = CallOptions(
-        settings=ModelSettings(
-            overdispersion=args.overdispersion,
-            contamination_rate=args.contamination_rate,
-            prior=args.prior,
-            tolerance=args.tol,
-            max_iterations=args.max_iterations,
-        ),
-        vcf_types=vcf_types,
-        min_depth=args.min_dp,
-        min_genotype_quality=args.min_gq,
-        min_marginal_posterior=args.min_marginal_posterior,
-        max_other_fraction=args.max_other_fraction,
-        gap_band=args.max_indel_length,
-    )
 
     sample_names, rows_by_marker, count_overflow = read_count_table(madc)
     ploidy_by_sample = read_ploidy_table(Path(args.ploidy_file)) if args.ploidy_file else {}
@@ -1294,6 +1490,35 @@ def run_call(args: argparse.Namespace) -> int:
             tasks.append(MarkerTask(clone_id, rows))
         else:
             tasks.append(MarkerTask(clone_id, rows, design.ref_tag, design.alt_tag, design.variant_pos + 1))
+
+    overdispersion_report: Dict[str, object] = {"requested": args.overdispersion}
+    if args.overdispersion == OVERDISPERSION_AUTO:
+        overdispersion, estimate_report = choose_overdispersion(tasks, ploidies, args.contamination_rate)
+        overdispersion_report.update(estimate_report)
+    else:
+        overdispersion = args.overdispersion
+    overdispersion_report["used"] = overdispersion
+    # False when --overdispersion auto fell back to the default.
+    overdispersion_estimated = (
+        overdispersion_report.get("estimate") is not None and overdispersion_report.get("at_limit") != "lowest"
+    )
+
+    options = CallOptions(
+        settings=ModelSettings(
+            overdispersion=overdispersion,
+            contamination_rate=args.contamination_rate,
+            prior=args.prior,
+            tolerance=args.tol,
+            max_iterations=args.max_iterations,
+        ),
+        vcf_types=vcf_types,
+        min_depth=args.min_dp,
+        min_genotype_quality=args.min_gq,
+        min_marginal_posterior=args.min_marginal_posterior,
+        max_other_fraction=args.max_other_fraction,
+        gap_band=args.max_indel_length,
+        overdispersion_estimated=overdispersion_estimated,
+    )
 
     worker = functools.partial(process_marker, ploidies=ploidies, options=options)
     if args.jobs > 1 and len(tasks) > 1:
@@ -1361,7 +1586,8 @@ def run_call(args: argparse.Namespace) -> int:
             "max_indel_length": args.max_indel_length,
             "jobs": args.jobs,
         },
-        "model": model_description(options.settings),
+        "model": model_description(options.settings, options.overdispersion_estimated),
+        "overdispersion": overdispersion_report,
         "coordinates": "marker-local",
         "samples": {
             "count": len(sample_names),
@@ -1470,10 +1696,11 @@ def add_call_command(subparsers) -> None:
         ),
     )
     calling.add_argument(
-        "--overdispersion", type=_positive_float, default=DEFAULT_OVERDISPERSION,
+        "--overdispersion", type=_overdispersion_argument, default=DEFAULT_OVERDISPERSION,
         help=(
             "beta-binomial overdispersion parameter, as in polyRAD: lower values allow read fractions to stray "
-            f"further from the expected fraction (default: {DEFAULT_OVERDISPERSION:g})"
+            "further from the expected fraction. Give a number, or 'auto' to estimate it from the read counts "
+            f"by maximum likelihood (default: {DEFAULT_OVERDISPERSION:g})"
         ),
     )
     calling.add_argument(

@@ -15,6 +15,9 @@ Notable changes by version. Measurements behind each change are in the
   marginal posterior among the called dosages. Coordinates are marker-local. It uses only the
   standard library. The tests compare its likelihoods, posteriors, converged allele frequencies
   and genotypes with polyRAD 2.0.1 on stored reference values.
+- `call --overdispersion auto` estimates the beta-binomial overdispersion from the read counts by
+  maximum likelihood. On simulated diploid, tetraploid, hexaploid and mixed-ploidy populations it
+  recovered the simulated value. The default stays at polyRAD's 9.
 - New optional command `filter-paralogs`, in its own module, `madcats_paralogs.py`. It cleans a
   MADC (from `generate`, a vendor DArT MADC with or without its preamble, or HapApp's
   fixed-allele-ID output) against a reference genome. Each marker is placed by its Ref tag
