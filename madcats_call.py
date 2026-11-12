@@ -55,7 +55,8 @@ usable value at any read depth.
 Reading map: the model (``allele_log_likelihoods``, ``hwe_prior``,
 ``dosage_posterior``, ``call_marker``); from marginal posteriors to one
 genotype (``correct_dosages_to_ploidy``, ``best_dosages_summing_to_ploidy``);
-the overdispersion estimate (``estimate_overdispersion``); input (``read_count_table``, ``read_ploidy_table``); what each VCF type counts
+the overdispersion estimate (``estimate_overdispersion``); input
+(``read_count_table``, ``read_ploidy_table``); what each VCF type counts
 (``resolve_target``, ``RowReading``, ``process_marker``); VCF text
 (``format_record``, ``vcf_header``); the command line (``run_call``,
 ``add_call_command``).
@@ -309,8 +310,8 @@ def _solve_linear_system(matrix: Sequence[Sequence[float]], right_hand_side: Seq
                 rows[index][position] -= factor * rows[column][position]
     solution = [0.0] * size
     for index in range(size - 1, -1, -1):
-        remainder = rows[index][size] - sum(rows[index][position] * solution[position] for position in range(index + 1, size))
-        solution[index] = remainder / rows[index][index]
+        already_solved = sum(rows[index][position] * solution[position] for position in range(index + 1, size))
+        solution[index] = (rows[index][size] - already_solved) / rows[index][index]
     return solution
 
 
