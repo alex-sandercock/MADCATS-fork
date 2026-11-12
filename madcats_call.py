@@ -107,7 +107,8 @@ PRIOR_HWE = "hwe"
 PRIOR_CHOICES = (PRIOR_UNIFORM, PRIOR_HWE)
 
 # polyRAD's defaults: AddGenotypeLikelihood(overdispersion = 9), readDArTag(contamRate = 0.001)
-# and IterateHWE(tol = 1e-5).  polyRAD has no iteration limit.
+# and IterateHWE(tol = 1e-5).  polyRAD has no iteration limit.  The command estimates the
+# overdispersion unless one is given, and uses this default only when it cannot.
 DEFAULT_OVERDISPERSION = 9.0
 DEFAULT_CONTAMINATION_RATE = 0.001
 DEFAULT_TOLERANCE = 1e-5
@@ -538,6 +539,8 @@ OVERDISPERSION_GRID = (2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 25, 30, 4
 # same value.
 OVERDISPERSION_MAX_CELLS = 20000
 OVERDISPERSION_MIN_MARKERS = 20
+# With fewer sample-by-marker cells that have reads, the estimate would be mostly noise.
+OVERDISPERSION_MIN_CELLS = 100
 OVERDISPERSION_MAX_ROUNDS = 4
 
 
@@ -545,7 +548,9 @@ OVERDISPERSION_MAX_ROUNDS = 4
 class OverdispersionEstimate:
     """Result of ``estimate_overdispersion``.
 
-    ``value`` is the chosen overdispersion, or None when no marker had reads.
+    ``value`` is the chosen overdispersion, or None when fewer than
+    ``OVERDISPERSION_MIN_CELLS`` sample-by-marker cells had reads
+    (``cells_with_reads``), which is too little to estimate from.
     ``log_likelihood`` maps every value tried to the log-likelihood of the
     read counts under it, in the last round.  ``at_limit`` is ``"lowest"`` or
     ``"highest"`` when the chosen value is an end of the grid, so the best
@@ -558,6 +563,7 @@ class OverdispersionEstimate:
     markers_used: int
     values_by_round: List[float]
     at_limit: Optional[str] = None
+    cells_with_reads: int = 0
 
 
 def log_likelihood_of_counts(
@@ -632,11 +638,13 @@ def estimate_overdispersion(
     samples_with_reads = [
         sum(1 for sample_depths in depths if sum(sample_depths) > 0) for depths in depths_by_marker
     ]
-    usable = [depths for depths, count in zip(depths_by_marker, samples_with_reads) if count > 0]
-    if not usable:
-        return OverdispersionEstimate(None, {}, 0, [])
+    usable = [(depths, count) for depths, count in zip(depths_by_marker, samples_with_reads) if count > 0]
     marker_limit = max(OVERDISPERSION_MIN_MARKERS, OVERDISPERSION_MAX_CELLS // max(1, len(ploidies)))
-    markers = _evenly_spaced(usable, marker_limit)
+    chosen_markers = _evenly_spaced(usable, marker_limit)
+    cells_with_reads = sum(count for _, count in chosen_markers)
+    if cells_with_reads < OVERDISPERSION_MIN_CELLS:
+        return OverdispersionEstimate(None, {}, len(chosen_markers), [], cells_with_reads=cells_with_reads)
+    markers = [depths for depths, _ in chosen_markers]
 
     current = start
     values_by_round: List[float] = []
@@ -660,7 +668,7 @@ def estimate_overdispersion(
         current = best
     chosen = values_by_round[-1]
     at_limit = "lowest" if chosen == min(grid) else "highest" if chosen == max(grid) else None
-    return OverdispersionEstimate(chosen, log_likelihood, len(markers), values_by_round, at_limit)
+    return OverdispersionEstimate(chosen, log_likelihood, len(markers), values_by_round, at_limit, cells_with_reads)
 
 
 # ---------------------------------------------------------------------------
@@ -1411,7 +1419,7 @@ def choose_overdispersion(
 
     Returns the value to use and a report for the QC JSON.  The estimate is
     made from each marker's reference-type and alternate-type read counts.
-    It falls back to the default when there is nothing to estimate from, or
+    It falls back to the default when there is too little to estimate from, or
     when the best value is the lowest one tried: that is what a table of
     inbred lines or another sample set far from Hardy-Weinberg proportions
     produces, whatever its real read-count scatter.
@@ -1428,6 +1436,7 @@ def choose_overdispersion(
     report: Dict[str, object] = {
         "estimate": estimate.value,
         "markers_used": estimate.markers_used,
+        "cells_with_reads": estimate.cells_with_reads,
         "values_by_round": estimate.values_by_round,
         "at_limit": estimate.at_limit,
         "log_likelihood_by_value": {
@@ -1436,7 +1445,9 @@ def choose_overdispersion(
     }
     if estimate.value is None:
         print(
-            f"warning: no marker has reads to estimate the overdispersion from; using {DEFAULT_OVERDISPERSION:g}",
+            f"note: too few read counts to estimate the overdispersion ({estimate.cells_with_reads:,} "
+            f"sample-by-marker cells with reads; {OVERDISPERSION_MIN_CELLS} needed). Using "
+            f"{DEFAULT_OVERDISPERSION:g}.",
             file=sys.stderr,
         )
         return DEFAULT_OVERDISPERSION, report
@@ -1700,11 +1711,12 @@ def add_call_command(subparsers) -> None:
         ),
     )
     calling.add_argument(
-        "--overdispersion", type=_overdispersion_argument, default=DEFAULT_OVERDISPERSION,
+        "--overdispersion", type=_overdispersion_argument, default=OVERDISPERSION_AUTO,
         help=(
             "beta-binomial overdispersion parameter, as in polyRAD: lower values allow read fractions to stray "
-            "further from the expected fraction. Give a number, or 'auto' to estimate it from the read counts "
-            f"by maximum likelihood (default: {DEFAULT_OVERDISPERSION:g})"
+            "further from the expected fraction. 'auto' estimates it from the read counts by maximum "
+            f"likelihood, and uses {DEFAULT_OVERDISPERSION:g} when it cannot; or give a number "
+            f"(default: {OVERDISPERSION_AUTO})"
         ),
     )
     calling.add_argument(

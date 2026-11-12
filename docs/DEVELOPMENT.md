@@ -1602,7 +1602,7 @@ polyRAD's method and counts in the QC JSON how often the exact search differs.
 **Overdispersion.** polyRAD's default of 9 allows more scatter in read
 fractions than the gap between neighbouring polyploid dosages. On a simulated
 mixed-ploidy table without extra scatter (500 markers, 300 samples, target
-records, defaults otherwise):
+records, other settings at their defaults):
 
 | `--overdispersion` | 2x called / correct | 4x called / correct | 6x called / correct |
 |---|---|---|---|
@@ -1611,7 +1611,8 @@ records, defaults otherwise):
 | 200 | 97.7% / 99.98% | 86.2% / 99.39% | 51.5% / 98.70% |
 | `auto` (chose 300) | 97.7% / 99.98% | 86.9% / 99.33% | 55.2% / 98.34% |
 
-`--overdispersion auto` is a maximum-likelihood estimate over a grid
+`--overdispersion auto`, the default since the real-data comparison below, is
+a maximum-likelihood estimate over a grid
 (`estimate_overdispersion`). polyRAD's `TestOverdispersion` was ported first
 and reproduced polyRAD's scores to four decimal places on three simulated
 tables, but both chose 10 for a tetraploid table simulated with 50 and 4 for a
@@ -1673,6 +1674,20 @@ The published dosages come from another caller, so a difference is not
 necessarily an error of either. Calling from the Ref and Alt rows alone,
 without the Match rows, lowered agreement to 80%, so the published calls also
 counted Match rows.
+
+polyRAD's other priors were run on the same target counts at the published
+markers, with the overdispersion `call` estimated (40 and 50), to see what a
+port would gain on these families:
+
+| polyRAD prior | I195 × J432: called / same dosage | E115 × F628: called / same dosage |
+|---|---|---|
+| `IterateHWE` | 100% / 90.80% | 100% / 89.93% |
+| `IteratePopStruct` | 100% / 90.74% | 100% / 89.91% |
+| `PipelineMapping2Parents` (F1, no linkage) | 93.9% / 91.08% | 95.0% / 90.42% |
+
+A single F1 family has no population structure, so the population-structure
+prior changes nothing here. At these depths (medians of about 180 and 430
+reads per sample and marker) the prior matters little.
 
 The processed layout of these files has a `readCountSum` column before the
 samples, which `call` skips.

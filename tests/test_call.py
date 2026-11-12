@@ -225,10 +225,13 @@ class OverdispersionEstimateTests(unittest.TestCase):
         estimate = call.estimate_overdispersion(table, [2] * 60)
         self.assertEqual((estimate.value, estimate.at_limit), (min(call.OVERDISPERSION_GRID), "lowest"))
 
-    def test_nothing_to_estimate_from(self):
-        estimate = call.estimate_overdispersion([[[0, 0], [0, 0]]], [2, 2])
-        self.assertIsNone(estimate.value)
+    def test_too_little_to_estimate_from(self):
+        self.assertIsNone(call.estimate_overdispersion([[[0, 0], [0, 0]]], [2, 2]).value)
         self.assertIsNone(call.estimate_overdispersion([], [2, 2]).value)
+        # Three markers of ten samples are 30 cells with reads, below the minimum of 100.
+        few = simulated_two_allele_markers(20, 2, markers=3, samples=10)
+        estimate = call.estimate_overdispersion(few, [2] * 10)
+        self.assertEqual((estimate.value, estimate.cells_with_reads), (None, 30))
 
     def test_marker_subset_is_limited_and_evenly_spaced(self):
         self.assertEqual(call._evenly_spaced(list(range(10)), 20), list(range(10)))
@@ -756,8 +759,22 @@ class CommandBehaviourTests(CommandTestCase):
         model_line = next(line for line in header if line.startswith("##madcatsModel="))
         self.assertIn(f"overdispersion {report['used']:g}, estimated from the read counts", model_line)
 
+        # The estimate is the default.
+        self.call(madc, "--ploidy", "4")
+        self.assertEqual(self.qc["overdispersion"]["used"], report["used"])
+
         self.call(madc, "--ploidy", "4", "--overdispersion", "30")
         self.assertEqual(self.qc["overdispersion"], {"requested": 30.0, "used": 30.0})
+
+    def test_overdispersion_auto_falls_back_on_a_small_table(self):
+        madc = self.write_madc(
+            [("M1", "Ref", REF_TAG, [30, 15, 0]), ("M1", "Alt", ALT_TAG, [0, 16, 28])], ["s1", "s2", "s3"]
+        )
+        self.call(madc)
+        report = self.qc["overdispersion"]
+        self.assertEqual((report["requested"], report["estimate"], report["used"]), ("auto", None, 9.0))
+        self.assertEqual(report["cells_with_reads"], 3)
+        self.assertIn("too few read counts", self.stderr)
 
     def test_overdispersion_auto_falls_back_for_inbred_samples(self):
         table = simulated_two_allele_markers(20, 2, markers=30, samples=60, genotypes="inbred")
