@@ -1689,6 +1689,53 @@ A single F1 family has no population structure, so the population-structure
 prior changes nothing here. At these depths (medians of about 180 and 430
 reads per sample and marker) the prior matters little.
 
+**Against updog's norm model.** updog 2.1.7 (`flexdog`, `model = "norm"`) was
+run on the same target counts at the published markers. Unfiltered agreement
+with the published dosages was 92.98% and 92.68%, against 90.80% and 89.93%
+for `call` with the HWE prior; updog took 235 s and 453 s on four cores. The
+two callers give the same dosage for 96.99% and 96.54% of genotypes, and where
+they differ the published dosage sides with updog about nine times in ten, so
+the published dosages probably come from updog or a similar caller. Split by
+the allelic bias updog fitted for each marker:
+
+| Fitted bias of the marker | Share of genotypes | updog = `call` | updog = published | `call` = published |
+|---|---|---|---|---|
+| 0.8–1.25 | 73%, 69% | 99.19%, 99.28% | 93.59%, 92.91% | 93.09%, 92.50% |
+| outside that, within 0.67–1.5 | 17%, 21% | 94.96%, 95.36% | 93.63%, 92.85% | 89.31%, 89.05% |
+| outside 0.67–1.5 | 10%, 11% | 83.77%, 81.16% | 87.09%, 90.83% | 75.54%, 75.11% |
+
+updog's per-marker fits had a median bias of 0.99 and 0.98 (10th–90th
+percentile 0.72–1.24 and 0.72–1.30), a median sequencing-error rate of 0.09%
+and 0.24%, and a median overdispersion of 395 and 183 on polyRAD's scale. The
+single values `call` estimates for these tables (40 and 50) are lower because
+they absorb the bias, which `call` does not model.
+
+On simulated tetraploid tables with known genotypes (100 markers, 150 samples,
+20–60 reads, overdispersion 40, 0.5% read errors; one table per case),
+accuracy of the most probable dosage:
+
+| Population | updog norm | `call` defaults | `call`, contamination 0.01 and overdispersion 40 |
+|---|---|---|---|
+| Random mating | 87.5% | 84.8% | 89.2% |
+| F1 | 88.7% | 88.2% | 89.4% |
+| Two subpopulations | 88.8% | 80.3% | 89.5% |
+| Inbred lines | 83.4% | 86.6% | 96.8% |
+| Random mating, biased markers | 86.0% | 79.7% | 82.3% |
+| F1, biased markers | 86.9% | 82.4% | 84.9% |
+| Two subpopulations, biased markers | 89.0% | 77.9% | 85.3% |
+| Inbred lines, biased markers | 84.9% | 86.2% | 96.6% |
+
+Biased markers had a bias of 2^N(0, 0.5). Three things separate the columns.
+(1) Read errors above the contamination rate pull the overdispersion estimate
+down: with a true value of 40 it was 30, 16, 12 and 8 at error rates of 0.1%,
+0.3%, 0.5% and 1%, and 40–50 throughout once the contamination rate was 0.01.
+(2) The estimate assumes Hardy-Weinberg proportions and fails on the
+two-subpopulation table (7) and on inbred lines (falls back to 9). (3) With
+the right overdispersion and stray-read rate, `call` matches or beats updog on
+unbiased markers and trails it by 2–4 points on biased ones. A prototype of a
+normal-shaped prior in the `call` engine (not in the repository) changed these
+figures by at most 1.5 points.
+
 The processed layout of these files has a `readCountSum` column before the
 samples, which `call` skips.
 
