@@ -1632,8 +1632,50 @@ case, with the simulated value in the first column:
 
 Inbred lines have no heterozygotes to measure scatter from and do not fit the
 Hardy-Weinberg weights, so the estimate ends at the lowest value; `call` then
-warns and uses 9. These are simulations. The estimate has not yet been checked
-on real panels.
+warns and uses 9. On the two real alfalfa F1 populations below it chose 40 and
+50.
+
+**Real alfalfa DArTag data (tetraploid, 3K panel).** Three processed MADCs
+were called as tetraploids with the `call` model and with polyRAD 2.0.1
+(`IterateHWE`, overdispersion 9, then `GetProbableGenotypes` with
+`multiallelic = "correct"`) on the same counts: the two F1 populations of the
+G3 article jkag131 (I195 × J432, 186 samples; E115 × F628, 374 samples) and
+project DAl22-7249 (615 samples from 20 crosses and their parents).
+
+| MADC | Target genotype values identical | Haplotype genotype values identical |
+|---|---|---|
+| I195 × J432 (tolerance 1e-7) | 1,103,352 of 1,103,352 | 1,385,886 of 1,385,886 |
+| E115 × F628 (tolerance 1e-6) | 2,222,352 of 2,223,056 | 3,251,974 of 3,252,678 |
+| DAl22-7249 (tolerance 1e-6) | 3,485,814 of 3,485,820 | 5,306,214 of 5,306,220 |
+
+Every difference is at one marker (E115 × F628) or two (DAl22-7249) where
+polyRAD had stopped while that marker's allele frequency was still moving: its
+stopping rule is the mean change over all loci, and those frequencies were
+0.01–0.03 from where they settle. Elsewhere the two tools' allele frequencies
+differ by 1e-7 at the median.
+
+The article publishes the dosages used for its linkage maps. Of its markers,
+974 and 986 are panel targets, and the rest are off-target SNPs. Target calls
+against the published dosages, over 166 and 338 progeny (the published tables
+count Ref copies, and count the other allele at 38 and 43 markers, which were
+re-oriented):
+
+| Settings | I195 × J432: called / same dosage | E115 × F628: called / same dosage |
+|---|---|---|
+| Overdispersion 9, no filters (what polyRAD calls) | 100% / 88.81% | 100% / 86.33% |
+| `--overdispersion auto`, no filters | 100% / 90.80% | 100% / 89.93% |
+| Overdispersion 9, default filters | 40.9% / 93.17% | 41.3% / 91.78% |
+| `--overdispersion auto`, default filters | 89.0% / 93.15% | 91.8% / 92.19% |
+| `--overdispersion auto --prior uniform`, default filters | 86.6% / 93.01% | 90.2% / 91.98% |
+
+In every row 98.5–99.4% of calls are within one copy of the published dosage.
+The published dosages come from another caller, so a difference is not
+necessarily an error of either. Calling from the Ref and Alt rows alone,
+without the Match rows, lowered agreement to 80%, so the published calls also
+counted Match rows.
+
+The processed layout of these files has a `readCountSum` column before the
+samples, which `call` skips.
 
 **Contamination as the only error allowance.** With the default contamination
 rate of 0.001, a diploid with 10 Ref reads and 1 Alt read is called

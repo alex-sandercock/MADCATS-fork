@@ -577,6 +577,18 @@ class TargetVcfTests(CommandTestCase):
         (record,) = self.vcf(prefix, "target")[2]
         self.assertEqual([sample["AD"] for sample in record["samples"]], ["36,0", "14,15"])
 
+    def test_read_total_column_is_not_a_sample(self):
+        path = self.dir / "processed.csv"
+        with open(path, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["AlleleID", "CloneID", "AlleleSequence", "readCountSum", "s1", "s2"])
+            writer.writerow(["M1|Ref_0001", "M1", REF_TAG, 44, 30, 14])
+            writer.writerow(["M1|Alt_0002", "M1", ALT_TAG, 15, 0, 15])
+        prefix = self.call(path)
+        _, samples, (record,) = self.vcf(prefix, "target")
+        self.assertEqual(samples, ["s1", "s2"])
+        self.assertEqual([sample["AD"] for sample in record["samples"]], ["30,0", "14,15"])
+
     def test_negative_counts_clear_the_sample_at_that_marker(self):
         madc = self.write_madc(
             [("M1", "Ref", REF_TAG, [-100, 15, 40]), ("M1", "Alt", ALT_TAG, [20, 16, 0])], ["s1", "s2", "s3"]
