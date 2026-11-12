@@ -5,6 +5,16 @@ Notable changes by version. Measurements behind each change are in the
 
 ## Unreleased
 
+- New command `call`, in its own module, `madcats_call.py`. It calls genotypes from a MADC (from
+  `generate` or `filter-paralogs`, a vendor MADC, or HapApp's fixed-allele-ID output) and writes
+  VCFs: `--vcf target` (the designed variant of each marker; the default), `all` (targets plus
+  other base substitutions in the tags) and `haplotype` (whole tag sequences as alleles), one file
+  per type. Ploidy is set per sample (`--ploidy`, `--ploidy-file`). The model is adapted from
+  polyRAD: a beta-binomial likelihood with a uniform or Hardy-Weinberg prior, iterated per record.
+  Two-allele records carry `GQ`, `GP` and `PL`; records with more alleles carry `MPC`, the lowest
+  marginal posterior among the called dosages. Coordinates are marker-local. It uses only the
+  standard library. The tests compare its likelihoods, posteriors, converged allele frequencies
+  and genotypes with polyRAD 2.0.1 on stored reference values.
 - New optional command `filter-paralogs`, in its own module, `madcats_paralogs.py`. It cleans a
   MADC (from `generate`, a vendor DArT MADC with or without its preamble, or HapApp's
   fixed-allele-ID output) against a reference genome. Each marker is placed by its Ref tag

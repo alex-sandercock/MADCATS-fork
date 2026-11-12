@@ -12,8 +12,8 @@ one exception is optional: ``filter-paralogs``, in its own module
 ``madcats_paralogs.py``, imports the ``mappy`` aligner on first use
 (``pip install madcats[genome]``).
 
-Seven subcommands cover the read models the pipeline understands, and an
-eighth cleans a finished table:
+Seven subcommands cover the read models the pipeline understands, an eighth
+cleans a finished table, and a ninth calls genotypes from it:
 
 - ``design`` reconstructs each marker's canonical Ref/Alt tags from vendor
   primer + probe-design files.  This is the primer-started, single-end model
@@ -59,6 +59,10 @@ eighth cleans a finished table:
   meant for panels where co-amplified paralogous copies inflate
   heterozygosity when counts are summed per SNP; canonical rows are never
   dropped.
+- ``call`` (in ``madcats_call.py``) estimates each sample's genotype from the
+  read counts of a MADC and writes VCFs of the designed targets, of every
+  base substitution in the tags, or of whole tag sequences as alleles.  The
+  model is adapted from polyRAD and ploidy is set per sample.
 
 Pipeline stages (the ``generate`` command; see ``run_generate``):
 
@@ -5738,6 +5742,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  3. count                     generate\n"
             "  4. clean (optional)          filter-paralogs, with a reference genome\n"
             "  5. check (optional)          validate\n"
+            "  6. genotype (optional)       call, from the MADC to VCFs\n"
             "\n"
             "Run 'madcats <command> --help' for a command's options.\n"
             "Documentation: https://madcats.readthedocs.io"
@@ -5755,6 +5760,9 @@ def build_parser() -> argparse.ArgumentParser:
     import madcats_paralogs  # here, not at the top: it imports this module
 
     madcats_paralogs.add_filter_paralogs_command(subparsers)
+    import madcats_call
+
+    madcats_call.add_call_command(subparsers)
     return parser
 
 

@@ -35,6 +35,8 @@ each run writes a JSON file recording its parameters and read counts.
 - Writes raw MADC tables for HapApp, which prepares them for BIGr and other tools. Each row also
   lists its variants and marker type.
 - Optional genome-based paralog filter (`madcats filter-paralogs`, needs `pip install 'madcats[genome]'`)
+- Calls diploid and polyploid genotypes from the MADC (`madcats call`) and writes VCFs of the
+  designed targets, of all tag variants, or of whole microhaplotypes
   for panels where co-amplified paralogous copies inflate heterozygosity; works on vendor and HapApp
   fixed-allele-ID MADCs too.
 - Pure Python with no dependencies for everything else. Runs samples in parallel and caches per-sample results, so
@@ -149,6 +151,7 @@ The design rationale and version-by-version measurements behind every default ar
 | `madcats window-scan` | Sweep candidate tag lengths and recommend one from the project's own reads |
 | `madcats generate` | Generate the MADC count table |
 | `madcats validate` | Compare a generated MADC against a reference MADC |
+| `madcats call` | Call genotypes from a MADC and write target, all-variant or haplotype VCFs |
 
 Run `madcats <command> --help` for full options.
 

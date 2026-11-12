@@ -29,6 +29,7 @@
 - [madcats generate](commands/generate.md)
 - [madcats validate](commands/validate.md)
 - [madcats filter-paralogs](commands/filter-paralogs.md)
+- [madcats call](commands/call.md)
 
 # Reference
 
