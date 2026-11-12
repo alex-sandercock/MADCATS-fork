@@ -2271,13 +2271,16 @@ def choose_read_model(
     Whatever is ``auto`` is estimated from each marker's reference-type and
     alternate-type read counts (``estimate_read_model``).
 
-    The estimate is made with the ``norm`` prior whatever prior the run
-    uses, because it fits any distribution of genotypes; with
-    Hardy-Weinberg proportions the estimate was badly off for samples from
-    two subpopulations.  An overdispersion that cannot be estimated falls
-    back to the default: when the table is too small, and when the best
-    value is the lowest one tried, which is what inbred lines give, since
-    without heterozygous samples there is no scatter to measure.
+    The estimate is made with the free-weights prior whatever prior the run
+    uses, because the estimate is only as good as the genotype proportions
+    it assumes: with Hardy-Weinberg proportions it was badly off for
+    samples from two subpopulations, and with those or the ``norm`` prior,
+    neither of which can describe an excess of homozygotes, it failed for
+    inbred samples.  An overdispersion that cannot be estimated falls back
+    to the default: when the table is too small, and when the best value is
+    the lowest one tried, which is what a table without heterozygous
+    samples and without stray reads gives, since it has no scatter to
+    measure.
     """
     overdispersion_report: Dict[str, object] = {"requested": overdispersion}
     background_report: Dict[str, object] = {"requested": background_rate}
@@ -2296,7 +2299,7 @@ def choose_read_model(
     estimate = estimate_read_model(
         depths_by_marker,
         ploidies,
-        dataclasses.replace(settings, prior=PRIOR_NORM, selfing_rate=0.0),
+        dataclasses.replace(settings, prior=PRIOR_FREE, selfing_rate=0.0),
         BACKGROUND_RATE_GRID if background_rate == AUTO else (background_rate,),
         OVERDISPERSION_GRID if overdispersion == AUTO else (overdispersion,),
         map_markers,
@@ -2346,8 +2349,8 @@ def choose_read_model(
             overdispersion = DEFAULT_OVERDISPERSION
             print(
                 f"warning: the overdispersion estimate is the lowest value tried ({scatter.value:g}), as it is "
-                "when no sample is heterozygous (inbred lines) and there is no scatter of read fractions to "
-                f"measure. Using {overdispersion:g}; set --overdispersion to a number to choose it yourself.",
+                "when no sample is heterozygous (inbred lines) and the reads show no scatter to measure. "
+                f"Using {overdispersion:g}; set --overdispersion to a number to choose it yourself.",
                 file=sys.stderr,
             )
         else:

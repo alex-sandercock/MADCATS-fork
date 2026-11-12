@@ -444,8 +444,9 @@ def simulated_two_allele_markers(
 ):
     """Read counts ``[marker][sample][allele]`` drawn from the beta-binomial model.
 
-    ``genotypes`` is ``hwe`` (random mating) or ``inbred`` (every sample
-    homozygous).  ``bias`` is the alternate allele's allelic bias and
+    ``genotypes`` is ``hwe`` (random mating), ``inbred`` (every sample
+    homozygous) or ``partly inbred`` (three samples in four homozygous, the
+    rest as under random mating).  ``bias`` is the alternate allele's allelic bias and
     ``background_rate`` the share of reads that show the wrong allele.  The
     seed is fixed, so the counts are the same on every run.
     """
@@ -455,7 +456,7 @@ def simulated_two_allele_markers(
         frequency = generator.uniform(0.15, 0.85)
         depths = []
         for _ in range(samples):
-            if genotypes == "hwe":
+            if genotypes == "hwe" or (genotypes == "partly inbred" and generator.random() < 0.25):
                 dosage = sum(generator.random() < frequency for _ in range(ploidy))
             else:
                 dosage = ploidy if generator.random() < frequency else 0
@@ -539,6 +540,36 @@ class OverdispersionEstimateTests(unittest.TestCase):
         best_rate = max(estimate.by_background_rate, key=lambda rate: estimate.by_background_rate[rate][1])
         self.assertEqual(best_rate, estimate.background_rate)
         self.assertGreaterEqual(len(estimate.by_background_rate), 3)
+
+    def test_excess_of_homozygotes_needs_the_free_weights_prior(self):
+        # Three samples in four are homozygous.  Neither Hardy-Weinberg proportions nor a normal
+        # shape can describe that, and the estimate made with them ends at the lowest value;
+        # with one free probability per dosage it finds the simulated overdispersion.
+        table = simulated_two_allele_markers(
+            40, 4, markers=40, samples=80, genotypes="partly inbred", background_rate=0.005
+        )
+        estimates = {}
+        for prior in (call.PRIOR_HWE, call.PRIOR_NORM, call.PRIOR_FREE):
+            settings = call.ModelSettings(prior=prior, contamination_rate=0.0, background_rate=0.005)
+            estimates[prior] = call.estimate_overdispersion(table, [4] * 80, settings)
+        self.assertIn(estimates[call.PRIOR_FREE].value, (30, 40, 50))
+        self.assertIsNone(estimates[call.PRIOR_FREE].at_limit)
+        self.assertLess(estimates[call.PRIOR_HWE].value, 10)
+        self.assertLess(estimates[call.PRIOR_NORM].value, 10)
+
+    def test_free_weights_prior_is_the_share_of_each_dosage(self):
+        table = simulated_two_allele_markers(60, 4, markers=1, samples=120, genotypes="partly inbred", seed=4)[0]
+        result = call.call_marker(table, [4] * 120, call.ModelSettings(prior=call.PRIOR_FREE, overdispersion=60))
+        self.assertTrue(result.converged)
+        prior = result.priors[4][1]
+        self.assertAlmostEqual(sum(prior), 1.0, places=9)
+        # At convergence the prior equals the mean of the posteriors, dosage by dosage.
+        for dosage, probability in enumerate(prior):
+            mean_posterior = sum(sample[1][dosage] for sample in result.posteriors) / 120
+            self.assertAlmostEqual(probability, mean_posterior, places=4)
+        # Most of the weight is on the two homozygous dosages, which a normal shape cannot give.
+        self.assertGreater(prior[0] + prior[4], 0.7)
+        self.assertEqual(result.normal_prior_parameters, {})
 
     def test_one_parameter_can_be_held_fixed(self):
         table = simulated_two_allele_markers(40, 4, markers=30, samples=60, background_rate=0.005)

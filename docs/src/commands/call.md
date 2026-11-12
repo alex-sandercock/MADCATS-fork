@@ -173,12 +173,16 @@ stray reads in samples that do not carry an allele, scatter in samples that carr
 used, and the log-likelihood of every value tried, are in the QC JSON, and the VCF header states
 them.
 
-- The estimate uses the `norm` prior whatever `--prior` is, because it fits any distribution of
-  genotypes. With Hardy-Weinberg proportions it was badly off for samples from two subpopulations.
+- The estimate does not use `--prior`. It gives every dosage its own free probability at each
+  marker, because the estimate is only as good as the genotype proportions it assumes. With
+  Hardy-Weinberg proportions it was badly off for samples from two subpopulations, and with those
+  or the `norm` shape, neither of which can describe an excess of homozygotes, it failed for
+  inbred samples.
 - In simulations with 20 or more reads per sample both values were recovered. With 6 to 25 reads
   per sample they were within a factor of about two.
-- Inbred lines have no heterozygotes to measure scatter from: the overdispersion estimate ends at
-  the lowest value tried, and `call` warns and uses 9. The background rate is still estimated.
+- A table with no heterozygous samples and no stray reads has no scatter to measure: the
+  overdispersion estimate ends at the lowest value tried, and `call` warns and uses 9. Inbred
+  lines whose reads do include stray reads of the other allele can be estimated from those.
 - An overdispersion of 500, the highest value tried, means the counts scatter no more than random
   sampling of reads would.
 - A table with fewer than 100 sample-by-marker cells with reads is too small to estimate from;
