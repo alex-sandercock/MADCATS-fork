@@ -37,10 +37,10 @@ together:
 
 1. **Likelihood.** In a sample of ploidy *P* an allele can be present in 0 to *P* copies (its
    dosage). The probability of the allele's read count, out of the sample's reads in the record,
-   is beta-binomial. The expected read fraction of a dosage is dosage / *P*, moved slightly toward
-   the allele's frequency to allow for contamination between samples
-   (`--contamination-rate`). `--overdispersion` sets how far read fractions may stray from the
-   expected fraction.
+   is beta-binomial. The expected read fraction of a dosage is dosage / *P*, changed by the
+   allelic bias if one is fitted (`--allele-bias`) and then by the share of reads that show the
+   wrong allele (`--background-rate`). `--overdispersion` sets how far read fractions may stray
+   from the expected fraction.
 2. **Prior.** `--prior uniform` makes every dosage equally probable. `--prior hwe` (the default)
    uses Hardy-Weinberg proportions for the allele's frequency, estimated over all the samples
    together. `--prior norm` gives the dosages a normal shape, with a mean and a spread fitted to
@@ -144,35 +144,77 @@ get haplotype records and off-target records.
 |--------|---------|-------------|
 | `--prior {uniform,hwe,norm}` | `hwe` | Genotype prior (see [the genotype model](#the-genotype-model)) |
 | `--selfing-rate <FLOAT>` | 0 | With `--prior hwe`, the share of individuals that come from self-fertilisation: 0 is random mating, 1 is fully inbred lines |
+| `--allele-bias {off,fit}` | `off` | Allelic bias, where a copy of one allele yields more reads than a copy of the other. `fit` estimates it for each record with two alleles (see below) |
 | `--overdispersion <auto\|FLOAT>` | `auto` | Beta-binomial overdispersion parameter, as in polyRAD. Lower values allow read fractions to stray further from the expected fraction. `auto` estimates it from the read counts (see below); a number sets it |
-| `--contamination-rate <FLOAT>` | 0.001 | Expected share of a sample's reads that come from other samples |
+| `--background-rate <auto\|FLOAT>` | `auto` | Probability that a read shows one allele although it came from another. `auto` estimates it from the read counts (see below); a number sets it |
+| `--contamination-rate <FLOAT>` | 0 | polyRAD's contamination: the share of a sample's reads that come from other samples and show an allele at its frequency among them. `--background-rate` covers the same reads and more, so this is off unless set; polyRAD uses 0.001 |
 | `--tol <FLOAT>` | 1e-5 | With `--prior hwe` or `norm`, stop iterating a record once its allele frequencies (and, with `norm`, its prior probabilities) change by no more than this |
 | `--max-iterations <INT>` | 100 | With `--prior hwe` or `norm`, the most iterations a record may take |
 
-### Choosing the overdispersion
+### Overdispersion and background reads
 
-`--overdispersion` matters most in polyploids, where neighbouring dosages differ by a small read
-fraction. polyRAD's default of 9 was chosen for RAD-seq. On two tetraploid alfalfa DArTag
-populations it left 59% of target genotypes below the confidence thresholds, where the estimated
-values (40 and 50) left 8–11%, with the same agreement with published dosages.
+Two numbers describe how read counts stray from what a genotype predicts, and both are estimated
+from the table unless you set them.
 
-By default (`auto`) the value is estimated by maximum likelihood. For each value on a grid from 2
-to 500, `call` adds up the log-likelihood of every marker's reference and alternate read counts,
-with each sample's genotype summed out under Hardy-Weinberg proportions, and takes the value with
-the highest total. It uses up to 20,000 sample-by-marker cells, from markers at even spacing
-through the table, and takes a few seconds. The value used, and the log-likelihood of every value
-tried, are in the QC JSON; the VCF header states the value and that it was estimated.
+- **Overdispersion** is how far read fractions scatter around the expected fraction. It matters
+  most in polyploids, where neighbouring dosages differ by a small read fraction. polyRAD's
+  default of 9 was chosen for RAD-seq; on two tetraploid alfalfa DArTag populations it left 59% of
+  target genotypes below the confidence thresholds, against 8–11% with estimated values.
+- **The background-read rate** is the share of reads that show an allele they did not come from:
+  sequencing and amplification errors, index hopping and contamination together, as they remain
+  after the MADC was built. If it is set too low, such reads can only be explained as scatter, and
+  the overdispersion estimate drops with it.
 
-- The estimate assumes Hardy-Weinberg proportions. On simulated F1 families it came out up to 1.5
-  times the true value. On inbred lines, which have no heterozygotes to measure scatter from, it
-  ends at the lowest value tried; `call` then warns and uses 9.
-- When it is the highest value tried (500), the counts scatter no more than random sampling of
-  reads would.
+`call` chooses the pair that makes the read counts most probable. It tries background rates from
+0.0002 to 0.02 and overdispersions from 2 to 500, on each marker's reference and alternate read
+counts with the genotypes summed out, using up to 20,000 sample-by-marker cells from markers at
+even spacing through the table. The two can be told apart because they show in different samples:
+stray reads in samples that do not carry an allele, scatter in samples that carry both. The values
+used, and the log-likelihood of every value tried, are in the QC JSON, and the VCF header states
+them.
+
+- The estimate uses the `norm` prior whatever `--prior` is, because it fits any distribution of
+  genotypes. With Hardy-Weinberg proportions it was badly off for samples from two subpopulations.
+- In simulations with 20 or more reads per sample both values were recovered. With 6 to 25 reads
+  per sample they were within a factor of about two.
+- Inbred lines have no heterozygotes to measure scatter from: the overdispersion estimate ends at
+  the lowest value tried, and `call` warns and uses 9. The background rate is still estimated.
+- An overdispersion of 500, the highest value tried, means the counts scatter no more than random
+  sampling of reads would.
 - A table with fewer than 100 sample-by-marker cells with reads is too small to estimate from;
-  `call` says so and uses 9.
-- To reproduce a polyRAD run, give its value: `--overdispersion 9`.
+  `call` says so and uses an overdispersion of 9 and a background rate of 0.002.
+- With `--allele-bias fit` the estimate fits the bias too. Without it, biased markers look like
+  scatter and the overdispersion comes out lower (40 and 50 against 100 and 150 on the two alfalfa
+  populations).
 - This is not polyRAD's `TestOverdispersion`, which on simulated tetraploid and hexaploid counts
   chose values well below the true one.
+
+To run polyRAD's model as polyRAD runs it:
+`--prior hwe --overdispersion 9 --contamination-rate 0.001 --background-rate 0`.
+
+### Allelic bias
+
+In amplicon data a copy of one allele often yields more reads than a copy of the other, so a
+sample with two copies of each allele in four does not show half its reads for each. Called
+without regard to this, such a marker gets shifted dosages. `--allele-bias fit` estimates the bias
+of every record with two alleles (targets, and off-target sites with two bases) and calls with it.
+Haplotype records and sites with three or more bases are called without a bias.
+
+The bias is updog's (Gerard et al. 2018): with bias *h*, an expected read fraction *f* of the
+reference allele becomes *f* / (*h*(1 − *f*) + *f*), so below 1 the reference allele is
+over-represented and above 1 under-represented. Like updog, `call` pulls the log of the bias
+towards 0 with a normal prior of standard deviation 0.7, starts from updog's five starting values
+(0.37 to 2.7) and keeps the fit with the highest log-likelihood after that prior. With the other
+settings equal, the fitted bias and the genotypes match updog's.
+
+- The bias is found by calling the record at a series of bias values, so a record takes about 15
+  times as long to call. On the two alfalfa populations a whole run took 4 to 6 times as long.
+- It is applied to the sample's own allele copies, and background reads are added afterwards.
+  updog applies its sequencing error first. In this order, samples that do not carry an allele say
+  nothing about its bias, which matters because the background rate is one value for the table.
+- The search covers biases from 0.14 to 7.4. A record whose fit ends at either limit is counted in
+  the QC JSON and marked in the bias table; such a marker is usually not behaving as one locus.
+- The VCF carries the bias as `INFO/BIAS`, and `PREFIX.bias.csv` lists every fitted record.
 
 ## Filters
 
@@ -206,7 +248,8 @@ madcats call --madc results/project_MADC.csv --output-prefix results/project \
 |------|----------|
 | `PREFIX.targets.vcf`, `PREFIX.all.vcf`, `PREFIX.haplotypes.vcf` | The VCFs chosen with `--vcf` (VCF 4.3, uncompressed) |
 | `PREFIX.haplotypes.alleles.csv` | With `--vcf haplotype`: for each marker and allele number, the MADC AlleleIDs it was counted from, its sequence and its total reads |
-| `PREFIX.qc.json` | Parameters, the model in words, samples per ploidy, and per VCF: records, genotypes called and missing by reason, reads used and excluded, records that did not converge, targets skipped by reason |
+| `PREFIX.bias.csv` | With `--allele-bias fit`: for each fitted record, the bias of the reference allele, the log-likelihood of the fit (after the prior on the bias), the starting value the search continued from, the number of bias values tried, and whether the fit converged or ended at a search limit |
+| `PREFIX.qc.json` | Parameters, the model in words, the overdispersion and background-rate estimates, a summary of the fitted biases, samples per ploidy, and per VCF: records, genotypes called and missing by reason, reads used and excluded, records that did not converge, targets skipped by reason |
 
 ### VCF fields
 
@@ -222,6 +265,7 @@ madcats call --madc results/project_MADC.csv --output-prefix results/project \
 | `PL` | two-allele records | Phred-scaled likelihood of each genotype, before the prior |
 | `MPC` | records with more than two alleles; every haplotype record | Lowest marginal posterior among the called dosages |
 | `INFO/TARGET` | `target`, `all` | The record is a marker's designed variant |
+| `INFO/BIAS` | two-allele records, with `--allele-bias fit` | Fitted allelic bias of the reference allele, as updog reports it for reference read counts |
 | `INFO/NS` | all | Samples with a called genotype |
 | `INFO/AF` | all | Estimated frequency of each alternate allele |
 

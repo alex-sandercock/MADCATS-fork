@@ -16,6 +16,11 @@
 #               overdispersion.  With those fixed, updog's likelihood is the
 #               beta-binomial that madcats_call uses with a contamination rate
 #               of 0, so the posteriors must agree.
+#   bias_markers  complete updog fits (flexdog, from its five starting values
+#               of the bias) of read counts simulated with an allelic bias,
+#               with the bias estimated and the sequencing error and
+#               overdispersion held fixed, for the norm and the hw (binomial)
+#               genotype distributions.
 # The committed JSON was made with the updog version recorded inside it.
 
 suppressMessages(library(updog))
@@ -75,6 +80,41 @@ markers <- lapply(names(marker_sets), function(name) {
        posteriors = lapply(seq_len(nrow(fit$postmat)), function(row) as.vector(fit$postmat[row, ])))
 })
 
+# Read counts with an allelic bias, as updog defines it: with bias h the expected
+# read fraction xi of the allele becomes xi / (h * (1 - xi) + xi).
+simulate_biased <- function(ploidy, dosages, bias) {
+  depth <- sample(25:110, length(dosages), replace = TRUE)
+  fraction <- dosages / ploidy
+  fraction <- fraction / (bias * (1 - fraction) + fraction)
+  shape1 <- pmax(fraction * overdispersion, 1e-9); shape2 <- pmax((1 - fraction) * overdispersion, 1e-9)
+  read_fraction <- ifelse(fraction %in% c(0, 1), fraction, rbeta(length(dosages), shape1, shape2))
+  list(ploidy = ploidy, allele_depth = rbinom(length(dosages), depth, read_fraction), marker_depth = depth)
+}
+bias_sets <- list(
+  tetraploid_bias_0.6     = list(data = simulate_biased(4L, rbinom(120, 4, 0.4), 0.6), simulated_bias = 0.6),
+  tetraploid_bias_1.9     = list(data = simulate_biased(4L, rbinom(120, 4, 0.55), 1.9), simulated_bias = 1.9),
+  tetraploid_no_bias      = list(data = simulate_biased(4L, rbinom(120, 4, 0.3), 1), simulated_bias = 1),
+  diploid_bias_0.5        = list(data = simulate_biased(2L, rbinom(100, 2, 0.5), 0.5), simulated_bias = 0.5),
+  hexaploid_family_bias_1.5 = list(
+    data = simulate_biased(6L, sample(c(1, 2, 3), 110, replace = TRUE, prob = c(0.25, 0.5, 0.25)), 1.5),
+    simulated_bias = 1.5)
+)
+bias_markers <- list()
+for (name in names(bias_sets)) {
+  data <- bias_sets[[name]]$data
+  for (model in c("norm", "hw")) {
+    fit <- flexdog(refvec = data$allele_depth, sizevec = data$marker_depth, ploidy = data$ploidy,
+                   model = model, verbose = FALSE, seq = 0, od = updog_overdispersion,
+                   update_seq = FALSE, update_od = FALSE, itermax = 20000, tol = 1e-13)
+    bias_markers[[length(bias_markers) + 1]] <- list(
+      name = name, model = model, ploidy = data$ploidy, simulated_bias = bias_sets[[name]]$simulated_bias,
+      allele_depth = data$allele_depth, marker_depth = data$marker_depth,
+      bias = fit$bias, log_likelihood = fit$llike, prior = as.vector(fit$gene_dist),
+      genotypes = as.vector(fit$geno),
+      posteriors = lapply(seq_len(nrow(fit$postmat)), function(row) as.vector(fit$postmat[row, ])))
+  }
+}
+
 # Minimal JSON writer, so the script needs no package beyond updog.
 to_json <- function(value) {
   if (is.list(value)) {
@@ -98,7 +138,8 @@ fixture <- list(
   updog_version = as.character(packageVersion("updog")),
   overdispersion = overdispersion,
   prior_fits = prior_fits,
-  markers = markers
+  markers = markers,
+  bias_markers = bias_markers
 )
 writeLines(to_json(fixture), "tests/fixtures/updog_norm.json")
 cat("Wrote tests/fixtures/updog_norm.json\n")

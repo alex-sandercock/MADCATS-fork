@@ -105,6 +105,77 @@ class PriorAndPosteriorTests(unittest.TestCase):
         self.assertAlmostEqual(posterior[0] / posterior[1], math.exp(2.0))
 
 
+class AllelicBiasTests(unittest.TestCase):
+    def test_expected_read_fraction_with_bias_and_background_reads(self):
+        # Two of four copies, no bias: half the reads.
+        self.assertEqual(call.expected_read_fraction(2, 4, 0.3, 0.0), 0.5)
+        # A bias of 3 means a copy of the other allele yields three times as many reads.
+        self.assertAlmostEqual(call.expected_read_fraction(2, 4, 0.3, 0.0, bias=3.0), 0.25)
+        self.assertAlmostEqual(call.expected_read_fraction(1, 4, 0.3, 0.0, bias=0.5), 0.25 / (0.5 * 0.75 + 0.25))
+        # Background reads are added after the bias, so a sample without the allele shows
+        # the background rate whatever the bias.
+        for bias in (0.2, 1.0, 5.0):
+            self.assertAlmostEqual(call.expected_read_fraction(0, 4, 0.3, 0.0, bias, 0.01), 0.01)
+            self.assertAlmostEqual(call.expected_read_fraction(4, 4, 0.3, 0.0, bias, 0.01), 0.99)
+        self.assertAlmostEqual(call.expected_read_fraction(2, 4, 0.3, 0.0, 3.0, 0.01), 0.25 * 0.99 + 0.75 * 0.01)
+
+    def test_bias_is_estimated_and_corrects_the_calls(self):
+        table = simulated_two_allele_markers(60, 4, markers=1, samples=150, bias=0.5, seed=21)[0]
+        ploidies = [4] * 150
+        without = call.call_marker(table, ploidies, call.ModelSettings(overdispersion=60))
+        fitted = call.call_marker(table, ploidies, call.ModelSettings(overdispersion=60, fit_allele_bias=True))
+        self.assertEqual(without.allele_biases, [1.0, 1.0])
+        self.assertIsNone(without.bias_fit)
+        self.assertAlmostEqual(fitted.allele_biases[1], 0.5, delta=0.06)
+        # The reference allele's bias is the reciprocal, and its results are the mirror image.
+        self.assertAlmostEqual(fitted.allele_biases[0] * fitted.allele_biases[1], 1.0, places=12)
+        self.assertEqual(fitted.posteriors[0][0], list(reversed(fitted.posteriors[0][1])))
+        self.assertAlmostEqual(math.exp(fitted.bias_fit.log_bias), fitted.allele_biases[1], places=12)
+        self.assertFalse(fitted.bias_fit.at_limit)
+        # With the bias ignored, the alternate allele's excess of reads is read as extra copies.
+        def mean_dosage(result):
+            return sum(call.posterior_mean_dosage(sample[1]) for sample in result.posteriors) / 150
+
+        self.assertGreater(mean_dosage(without), mean_dosage(fitted) + 0.2)
+
+    def test_fit_is_the_best_of_all_the_bias_values_tried(self):
+        table = simulated_two_allele_markers(60, 4, markers=1, samples=100, bias=1.6, seed=5)[0]
+        settings = call.ModelSettings(overdispersion=60, fit_allele_bias=True)
+        fitted = call.call_marker(table, [4] * 100, settings)
+        chosen = fitted.bias_fit
+        self.assertGreaterEqual(chosen.fits, 15)
+        self.assertIn(chosen.best_start, call.BIAS_LOG_STARTS)
+        # No fixed bias on a fine grid gives a higher value of what the fit maximises.
+        marker_depths = [sum(sample) for sample in table]
+        alternate = [[sample[1]] for sample in table]
+        constants = [[call.count_constant(sample[1], sum(sample), 60)] for sample in table]
+        for step in range(-20, 21):
+            log_bias = step / 10
+            at_bias = call._iterate_marker(
+                alternate, marker_depths, constants, [4] * 100, settings,
+                [call.depth_ratio_frequencies(table)[1]], [math.exp(log_bias)],
+            )
+            log_likelihood = call.marginal_log_likelihood(at_bias.log_likelihoods, at_bias.priors, [4] * 100)
+            objective = log_likelihood - log_bias**2 / (2 * call.BIAS_LOG_PRIOR_SD**2)
+            self.assertLessEqual(objective, chosen.objective + 1e-3)
+
+    def test_samples_without_the_allele_say_nothing_about_its_bias(self):
+        # Every sample is a Ref homozygote, and stray Alt reads are far rarer than the
+        # background rate.  Nothing here bears on the bias, so the prior keeps it at 1.
+        table = [[150, 0] for _ in range(60)] + [[149, 1] for _ in range(3)]
+        settings = call.ModelSettings(
+            overdispersion=60, contamination_rate=0.0, background_rate=0.005, fit_allele_bias=True
+        )
+        fitted = call.call_marker(table, [4] * 63, settings)
+        self.assertAlmostEqual(fitted.allele_biases[1], 1.0, delta=0.02)
+
+    def test_records_with_more_than_two_alleles_get_no_bias(self):
+        depths = [[20, 10, 5], [0, 30, 6], [14, 0, 20]] * 5
+        result = call.call_marker(depths, [4] * 15, call.ModelSettings(overdispersion=40, fit_allele_bias=True))
+        self.assertEqual(result.allele_biases, [1.0, 1.0, 1.0])
+        self.assertIsNone(result.bias_fit)
+
+
 class NormalPriorTests(unittest.TestCase):
     def test_prior_is_a_normal_density_at_the_dosages(self):
         prior = call.normal_prior(4, 1.5, 0.8)
@@ -252,6 +323,35 @@ class UpdogParityTests(unittest.TestCase):
                 )
 
 
+    def test_fitted_bias_matches_updog(self):
+        fixture = self.fixture
+        self.assertEqual(len(fixture["bias_markers"]), 10)
+        for marker in fixture["bias_markers"]:
+            ploidy = marker["ploidy"]
+            settings = call.ModelSettings(
+                prior={"norm": call.PRIOR_NORM, "hw": call.PRIOR_HWE}[marker["model"]],
+                overdispersion=fixture["overdispersion"], contamination_rate=0.0, fit_allele_bias=True,
+                tolerance=1e-8, max_iterations=5000,
+            )
+            depths = [
+                [allele_depth, marker_depth - allele_depth]
+                for allele_depth, marker_depth in zip(marker["allele_depth"], marker["marker_depth"])
+            ]
+            result = call.call_marker(depths, [ploidy] * len(depths), settings)
+            label = f"{marker['name']} {marker['model']}"
+            # updog reports the bias of the allele it was given the read counts of: here the first.
+            self.assertAlmostEqual(result.allele_biases[0] / marker["bias"], 1.0, delta=0.01, msg=label)
+            for value, expected in zip(result.priors[ploidy][0], marker["prior"]):
+                self.assertAlmostEqual(value, expected, places=3, msg=label)
+            for sample, expected_posterior in enumerate(marker["posteriors"]):
+                for value, expected in zip(result.posteriors[sample][0], expected_posterior):
+                    self.assertAlmostEqual(value, expected, delta=2e-3, msg=f"{label} sample {sample}")
+                self.assertEqual(
+                    call.most_probable_dosage(result.posteriors[sample][0]), marker["genotypes"][sample],
+                    msg=f"{label} sample {sample}",
+                )
+
+
 class MarkerTests(unittest.TestCase):
     def test_marker_without_reads_is_not_callable(self):
         result = call.call_marker([[0, 0], [0, 0]], [2, 2])
@@ -339,11 +439,15 @@ class PloidyCorrectionTests(unittest.TestCase):
         self.assertLessEqual(log_probability(greedy), log_probability(exact) + 1e-12)
 
 
-def simulated_two_allele_markers(overdispersion, ploidy, markers, samples, genotypes="hwe", seed=11):
+def simulated_two_allele_markers(
+    overdispersion, ploidy, markers, samples, genotypes="hwe", seed=11, bias=1.0, background_rate=0.0
+):
     """Read counts ``[marker][sample][allele]`` drawn from the beta-binomial model.
 
     ``genotypes`` is ``hwe`` (random mating) or ``inbred`` (every sample
-    homozygous).  The seed is fixed, so the counts are the same on every run.
+    homozygous).  ``bias`` is the alternate allele's allelic bias and
+    ``background_rate`` the share of reads that show the wrong allele.  The
+    seed is fixed, so the counts are the same on every run.
     """
     generator = random.Random(seed)
     table = []
@@ -356,6 +460,8 @@ def simulated_two_allele_markers(overdispersion, ploidy, markers, samples, genot
             else:
                 dosage = ploidy if generator.random() < frequency else 0
             read_fraction = dosage / ploidy
+            read_fraction = read_fraction / (bias * (1 - read_fraction) + read_fraction)
+            read_fraction = read_fraction * (1 - background_rate) + (1 - read_fraction) * background_rate
             if 0 < read_fraction < 1:
                 read_fraction = generator.betavariate(
                     read_fraction * overdispersion, (1 - read_fraction) * overdispersion
@@ -368,16 +474,35 @@ def simulated_two_allele_markers(overdispersion, ploidy, markers, samples, genot
 
 
 class OverdispersionEstimateTests(unittest.TestCase):
-    def test_likelihood_of_one_sample_is_the_prior_weighted_average(self):
+    def test_marker_likelihood_is_the_prior_weighted_average_over_dosages(self):
+        depths = [[13, 7], [0, 0], [20, 0], [9, 11]]
+        ploidies = [4, 4, 4, 4]
         settings = call.ModelSettings(overdispersion=12)
-        frequency = 0.3
-        by_dosage = call.allele_log_likelihoods(7, 20, 4, frequency, settings)
-        expected = math.log(
-            sum(weight * math.exp(value) for weight, value in zip(call.hwe_prior(4, frequency), by_dosage))
+        result = call.call_marker(depths, ploidies, settings)
+        frequency = call.frequency_for_likelihood(result.allele_frequencies[1], len(depths))
+        grid = (5, 12, 60)
+        for overdispersion, observed in zip(
+            grid, call.marker_overdispersion_log_likelihoods(depths, ploidies, settings, grid)
+        ):
+            at_value = call.ModelSettings(overdispersion=overdispersion)
+            expected = 0.0
+            for reference_depth, alternate_depth in depths:
+                if reference_depth + alternate_depth == 0:
+                    continue   # a sample without reads adds nothing
+                by_dosage = call.allele_log_likelihoods(
+                    alternate_depth, reference_depth + alternate_depth, 4, frequency, at_value
+                )
+                expected += math.log(
+                    sum(weight * math.exp(value) for weight, value in zip(result.priors[4][1], by_dosage))
+                )
+            self.assertAlmostEqual(observed, expected, places=10)
+        # The same quantity from the call's own likelihoods, which used the allele frequency
+        # of the pass before the last and so differ in the contamination term by a hair.
+        self.assertAlmostEqual(
+            call.marker_overdispersion_log_likelihoods(depths, ploidies, settings, (12,))[0],
+            call.marginal_log_likelihood(result.log_likelihoods, result.priors, ploidies, allele=1),
+            places=6,
         )
-        # A second sample without reads adds nothing.
-        observed = call.log_likelihood_of_counts([[13, 7], [0, 0]], [4, 4], frequency, settings)
-        self.assertAlmostEqual(observed, expected, places=12)
 
     def test_recovers_the_simulated_value_in_diploids_and_polyploids(self):
         for ploidy in (2, 4, 6):
@@ -403,6 +528,35 @@ class OverdispersionEstimateTests(unittest.TestCase):
         few = simulated_two_allele_markers(20, 2, markers=3, samples=10)
         estimate = call.estimate_overdispersion(few, [2] * 10)
         self.assertEqual((estimate.value, estimate.cells_with_reads), (None, 30))
+
+    def test_background_rate_and_overdispersion_are_estimated_together(self):
+        table = simulated_two_allele_markers(40, 4, markers=40, samples=80, background_rate=0.005)
+        settings = call.ModelSettings(prior=call.PRIOR_NORM, contamination_rate=0.0)
+        estimate = call.estimate_read_model(table, [4] * 80, settings)
+        self.assertEqual(estimate.background_rate, 0.005)
+        self.assertIn(estimate.overdispersion.value, (30, 40, 50))
+        # Each rate tried is recorded with its overdispersion and log-likelihood; the chosen one is the best.
+        best_rate = max(estimate.by_background_rate, key=lambda rate: estimate.by_background_rate[rate][1])
+        self.assertEqual(best_rate, estimate.background_rate)
+        self.assertGreaterEqual(len(estimate.by_background_rate), 3)
+
+    def test_one_parameter_can_be_held_fixed(self):
+        table = simulated_two_allele_markers(40, 4, markers=30, samples=60, background_rate=0.005)
+        settings = call.ModelSettings(prior=call.PRIOR_NORM, contamination_rate=0.0)
+        fixed_rate = call.estimate_read_model(table, [4] * 60, settings, background_rates=(0.005,))
+        self.assertEqual(list(fixed_rate.by_background_rate), [0.005])
+        self.assertIn(fixed_rate.overdispersion.value, (30, 40, 50))
+        fixed_scatter = call.estimate_read_model(table, [4] * 60, settings, overdispersions=(40,))
+        self.assertEqual(fixed_scatter.overdispersion.value, 40)
+        self.assertIn(fixed_scatter.background_rate, (0.003, 0.005))
+
+    def test_too_low_a_background_rate_lowers_the_overdispersion_estimate(self):
+        # Reads of the wrong allele that the background rate does not allow for can only be
+        # explained by more scatter.  This is why the two are estimated together.
+        table = simulated_two_allele_markers(40, 4, markers=30, samples=60, background_rate=0.005)
+        settings = call.ModelSettings(prior=call.PRIOR_NORM, contamination_rate=0.0, background_rate=0.0002)
+        too_low = call.estimate_overdispersion(table, [4] * 60, settings)
+        self.assertLess(too_low.value, 30)
 
     def test_marker_subset_is_limited_and_evenly_spaced(self):
         self.assertEqual(call._evenly_spaced(list(range(10)), 20), list(range(10)))
@@ -1021,14 +1175,105 @@ class CommandBehaviourTests(CommandTestCase):
         self.assertEqual(report["cells_with_reads"], 3)
         self.assertIn("too few read counts", self.stderr)
 
+    def test_read_model_is_estimated_by_default_and_recorded(self):
+        table = simulated_two_allele_markers(40, 4, markers=40, samples=60, background_rate=0.005)
+        madc = self.madc_from_simulation(table)
+        prefix = self.call(madc, "--ploidy", "4")
+        self.assertEqual(self.qc["parameters"]["background_rate"], "auto")
+        self.assertEqual(self.qc["parameters"]["contamination_rate"], 0.0)
+        background = self.qc["background_rate"]
+        self.assertEqual((background["requested"], background["used"], background["estimate"]), ("auto", 0.005, 0.005))
+        self.assertIn("0.005", background["by_rate"])
+        self.assertIn(self.qc["overdispersion"]["used"], (30, 40, 50))
+        self.assertIn("Estimated background-read rate: 0.005", self.stderr)
+        model_line = next(line for line in self.vcf(prefix, "target")[0] if line.startswith("##madcatsModel="))
+        self.assertIn("background-read rate 0.005, estimated from the read counts", model_line)
+
+        self.call(madc, "--ploidy", "4", "--background-rate", "0.01", "--overdispersion", "25")
+        self.assertEqual(self.qc["background_rate"], {"requested": 0.01, "used": 0.01})
+        self.assertEqual(self.qc["overdispersion"], {"requested": 25.0, "used": 25.0})
+
+    def test_polyrad_settings_reproduce_polyrad_genotypes(self):
+        # The first locus of the polyRAD reference values has two alleles, so its dosages can
+        # be read off the target VCF.  Sample ploidies are 2, 3, 4 and 6.
+        fixture = load_fixture()
+        columns = fixture["locus_columns"][1]
+        depths = [[row[column] for column in columns] for row in fixture["depth"]]
+        madc = self.write_madc(
+            [
+                ("M1", "Ref", REF_TAG, [pair[0] for pair in depths]),
+                ("M1", "Alt", ALT_TAG, [pair[1] for pair in depths]),
+            ],
+            fixture["samples"],
+        )
+        ploidy_file = self.dir / "ploidy.tsv"
+        ploidy_file.write_text(
+            "".join(f"{name}\t{ploidy}\n" for name, ploidy in zip(fixture["samples"], fixture["ploidy"]))
+        )
+        prefix = self.call(
+            madc, "--ploidy-file", ploidy_file, "--prior", "hwe", "--overdispersion", "9", "--contamination-rate",
+            "0.001", "--background-rate", "0", "--tol", "1e-10", "--max-iterations", "1000", "--min-dp", "0",
+            "--min-gq", "0",
+        )
+        (record,) = self.vcf(prefix, "target")[2]
+        compared = 0
+        for sample, row in zip(record["samples"], fixture["iterated"]["genotypes"]):
+            if sample["DP"] == "0":
+                continue   # polyRAD calls a sample without reads from the prior; call leaves it missing
+            compared += 1
+            alternate_dosage = row[columns[1]]
+            ploidy = row[columns[0]] + alternate_dosage
+            expected = "/".join(["0"] * (ploidy - alternate_dosage) + ["1"] * alternate_dosage)
+            self.assertEqual(sample["GT"], expected)
+        self.assertEqual(compared, 15)
+
+    def test_allele_bias_is_written_to_the_vcf_the_bias_table_and_the_qc(self):
+        biased = simulated_two_allele_markers(60, 4, markers=3, samples=60, bias=0.5, seed=8)
+        unbiased = simulated_two_allele_markers(60, 4, markers=3, samples=60, seed=9)
+        madc = self.madc_from_simulation(biased + unbiased)
+        prefix = self.call(madc, "--ploidy", "4", "--allele-bias", "fit", "--overdispersion", "60",
+                           "--background-rate", "0.001", "--vcf", "target", "haplotype")
+        header, _, records = self.vcf(prefix, "target")
+        self.assertTrue(any(line.startswith("##INFO=<ID=BIAS,") for line in header))
+        self.assertTrue(any("allelic bias fitted" in line for line in header))
+        # The VCF gives the reference allele's bias: the reciprocal of the simulated alternate bias.
+        biases = [
+            float(dict(item.split("=") for item in record["INFO"].split(";") if "=" in item)["BIAS"])
+            for record in records
+        ]
+        for bias in biases[:3]:
+            self.assertAlmostEqual(bias, 2.0, delta=0.4)
+        for bias in biases[3:]:
+            self.assertAlmostEqual(bias, 1.0, delta=0.25)
+        with open(str(prefix) + ".bias.csv", newline="") as handle:
+            table = list(csv.DictReader(handle))
+        self.assertEqual([row["CloneID"] for row in table], [f"M{number:03d}" for number in range(6)])
+        self.assertEqual([round(float(row["Bias"]), 3) for row in table], biases)
+        for row in table:
+            self.assertEqual((row["Converged"], row["AtLimit"]), ("1", "0"))
+            self.assertGreaterEqual(int(row["Fits"]), 15)
+        summary = self.qc["allele_bias"]
+        self.assertEqual((summary["records_fitted"], summary["at_search_limit"], summary["not_converged"]), (6, 0, 0))
+        self.assertEqual(summary["outside_0.67_to_1.5"], 3)
+        # Haplotype records are not given a bias.
+        haplotype_header, _, haplotype_records = self.vcf(prefix, "haplotype")
+        self.assertFalse(any("ID=BIAS" in line for line in haplotype_header))
+        self.assertFalse(any("BIAS=" in record["INFO"] for record in haplotype_records))
+
+        self.call(madc, "--ploidy", "4", "--overdispersion", "60", "--background-rate", "0.001")
+        self.assertEqual(self.qc["allele_bias"], {})
+        self.assertFalse(Path(str(self.dir / "calls") + ".bias.csv").exists() and self.qc["outputs"]["bias_table"])
+
     def test_overdispersion_auto_falls_back_for_inbred_samples(self):
         table = simulated_two_allele_markers(20, 2, markers=30, samples=60, genotypes="inbred")
         prefix = self.call(self.madc_from_simulation(table), "--overdispersion", "auto")
         report = self.qc["overdispersion"]
         self.assertEqual((report["at_limit"], report["used"]), ("lowest", call.DEFAULT_OVERDISPERSION))
-        self.assertIn("Hardy-Weinberg", self.stderr)
+        self.assertIn("no sample is heterozygous", self.stderr)
         model_line = next(line for line in self.vcf(prefix, "target")[0] if line.startswith("##madcatsModel="))
-        self.assertNotIn("estimated from the read counts", model_line)
+        # The overdispersion is the fallback value; the background-read rate was still estimated.
+        self.assertIn("(overdispersion 9, contamination rate", model_line)
+        self.assertEqual(self.qc["background_rate"]["estimate"], self.qc["background_rate"]["used"])
 
     def test_parallel_run_writes_the_same_files(self):
         rows = []
