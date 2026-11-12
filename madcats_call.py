@@ -114,6 +114,10 @@ PRIOR_UNIFORM = "uniform"
 PRIOR_HWE = "hwe"
 PRIOR_NORM = "norm"
 PRIOR_CHOICES = (PRIOR_UNIFORM, PRIOR_HWE, PRIOR_NORM)
+# A prior with one free probability per dosage (updog's "flex").  It is used to estimate
+# the overdispersion and the background-read rate, and is not offered for calling: with
+# as many parameters as dosages it follows the reads too closely to steady a call.
+PRIOR_FREE = "free"
 
 # polyRAD's defaults: AddGenotypeLikelihood(overdispersion = 9), readDArTag(contamRate = 0.001)
 # and IterateHWE(tol = 1e-5).  polyRAD has no iteration limit.  The command estimates the
@@ -168,7 +172,7 @@ class ModelSettings:
             raise ValueError("contamination_rate must be at least 0 and below 1")
         if not 0 <= self.background_rate < 0.5:
             raise ValueError("background_rate must be at least 0 and below 0.5")
-        if self.prior not in PRIOR_CHOICES:
+        if self.prior not in PRIOR_CHOICES + (PRIOR_FREE,):
             raise ValueError(f"prior must be one of {', '.join(PRIOR_CHOICES)}")
         if not 0 <= self.selfing_rate <= 1:
             raise ValueError("selfing_rate must be between 0 and 1")
@@ -719,8 +723,8 @@ def _frequency_priors(
     """Priors that follow from the allele frequencies alone, as ``[ploidy][allele][dosage]``.
 
     Uniform for the ``uniform`` prior and Hardy-Weinberg proportions
-    otherwise.  The ``norm`` prior starts from the latter and is then fitted
-    (``_fitted_normal_priors``).  Samples of the same ploidy share a prior.
+    otherwise.  The fitted priors start from the latter (``_fitted_priors``).
+    Samples of the same ploidy share a prior.
     """
     if settings.prior == PRIOR_UNIFORM:
         return {ploidy: [uniform_prior(ploidy)] * len(allele_frequencies) for ploidy in ploidy_groups}
@@ -730,20 +734,23 @@ def _frequency_priors(
     }
 
 
-def _fitted_normal_priors(
+def _fitted_priors(
     posteriors: Sequence[Sequence[Sequence[float]]],
     ploidies: Sequence[int],
     allele_frequencies: Sequence[float],
     previous_parameters: Dict[int, List[Tuple[float, float]]],
+    free: bool = False,
 ) -> Tuple[Dict[int, List[List[float]]], Dict[int, List[Tuple[float, float]]]]:
-    """Normal-shaped priors fitted to the current posteriors, one per ploidy group and allele.
+    """Priors fitted to the current posteriors, one per ploidy group and allele.
 
-    Returns the priors as ``[ploidy][allele][dosage]`` and their
-    ``(mean, standard deviation)`` as ``[ploidy][allele]``.  Each ploidy
-    group is fitted on its own samples, because a normal shape over the
-    dosages of one ploidy says nothing about another.  A group with fewer
-    than ``NORMAL_PRIOR_MIN_SAMPLES`` samples gets the Hardy-Weinberg prior
-    for the marker's allele frequencies instead, and no parameters.
+    Returns the priors as ``[ploidy][allele][dosage]`` and, for the
+    normal-shaped prior, their ``(mean, standard deviation)`` as
+    ``[ploidy][allele]``.  With ``free`` the prior of a dosage is simply its
+    share of the summed posteriors, with no shape imposed.  Each ploidy group
+    is fitted on its own samples, because the dosages of one ploidy say
+    nothing about another.  A group with fewer than
+    ``NORMAL_PRIOR_MIN_SAMPLES`` samples gets the Hardy-Weinberg prior for
+    the marker's allele frequencies instead, and no parameters.
     """
     priors: Dict[int, List[List[float]]] = {}
     parameters: Dict[int, List[Tuple[float, float]]] = {}
@@ -756,11 +763,16 @@ def _fitted_normal_priors(
         if len(group) < NORMAL_PRIOR_MIN_SAMPLES:
             priors[ploidy] = [hwe_prior(ploidy, frequency) for frequency in allele_frequencies]
             continue
-        priors[ploidy], parameters[ploidy] = [], []
+        priors[ploidy] = []
+        if not free:
+            parameters[ploidy] = []
         for allele, frequency in enumerate(allele_frequencies):
             dosage_weights = [
                 sum(sample_posteriors[allele][dosage] for sample_posteriors in group) for dosage in range(ploidy + 1)
             ]
+            if free:
+                priors[ploidy].append([weight / len(group) for weight in dosage_weights])
+                continue
             if ploidy in previous_parameters:
                 start_mean, start_sd = previous_parameters[ploidy][allele]
             else:
@@ -879,9 +891,9 @@ def _iterate_marker(
         new_frequencies = frequencies_from_posteriors(posteriors, ploidies)
         change = sum(abs(new - old) for new, old in zip(new_frequencies, frequencies)) / len(frequencies)
         used_priors = priors
-        if settings.prior == PRIOR_NORM:
-            priors, normal_parameters = _fitted_normal_priors(
-                posteriors, ploidies, new_frequencies, normal_parameters
+        if settings.prior in (PRIOR_NORM, PRIOR_FREE):
+            priors, normal_parameters = _fitted_priors(
+                posteriors, ploidies, new_frequencies, normal_parameters, free=settings.prior == PRIOR_FREE
             )
             largest_prior_change = max(
                 abs(new - old)
@@ -925,7 +937,7 @@ class BiasFit(NamedTuple):
     ``log_bias`` is the natural log of the alternate allele's bias, and
     ``objective`` the value that was maximised there: the log-likelihood of
     the read counts plus the log of the prior on the bias.  ``best_start`` is
-    the log bias of the starting value that the search continued from,
+    the log bias of the starting value nearest the result,
     ``fits`` the number of bias values tried, and ``at_limit`` whether the
     result is the largest or smallest bias the search allows.
     """
@@ -985,12 +997,18 @@ def fit_allele_bias(
 
     The search has two stages.  The record is first called at each of
     updog's five starting values, each from scratch, so that a wrong first
-    guess of the genotypes at one bias cannot carry over to another.  The
-    best of the five is then refined by a golden-section search between its
-    two neighbours, each call starting from the nearest one already made.
-    If the best of the five is the outermost, the range is first extended in
-    the same steps for as long as that improves the fit.  The result is the
-    call with the highest value among all that were made.
+    guess of the genotypes at one bias cannot carry over to another.  Every
+    starting value that scores at least as well as its neighbours is then
+    refined by a golden-section search between them, each call starting from
+    the nearest one already made; an outermost starting value is first moved
+    outwards in the same steps for as long as that improves the fit.  The
+    result is the call with the highest value among all that were made.
+
+    Several starting values are refined, not just the best, because their
+    scores before refinement can mislead.  At a marker where all samples
+    share one or two dosages, the reads fit equally well with every dosage
+    shifted by one and a strong bias; only the prior on the bias tells the
+    two apart, and only once each has been refined to its best bias.
     """
     fits: Dict[float, Tuple[float, MarkerCall]] = {}
 
@@ -1009,18 +1027,25 @@ def fit_allele_bias(
         return fits[log_bias][0]
 
     step = BIAS_LOG_STARTS[1] - BIAS_LOG_STARTS[0]
-    best_start = max(BIAS_LOG_STARTS, key=lambda log_bias: objective(log_bias, from_scratch=True))
-    centre = best_start
-    while centre in (min(fits), max(fits)) and abs(centre) + step <= BIAS_LOG_LIMIT + 1e-9:
-        further = centre + math.copysign(step, centre)
-        if objective(further) <= objective(centre):
-            break
-        centre = further
-    _golden_section_maximum(
-        objective, max(-BIAS_LOG_LIMIT, centre - step), min(BIAS_LOG_LIMIT, centre + step), BIAS_LOG_TOLERANCE
-    )
+    start_scores = [objective(log_bias, from_scratch=True) for log_bias in BIAS_LOG_STARTS]
+    last = len(BIAS_LOG_STARTS) - 1
+    for index, centre in enumerate(BIAS_LOG_STARTS):
+        neighbour_scores = [start_scores[other] for other in (index - 1, index + 1) if 0 <= other <= last]
+        if start_scores[index] < max(neighbour_scores):
+            continue
+        if index in (0, last):
+            while abs(centre) + step <= BIAS_LOG_LIMIT + 1e-9:
+                further = centre + math.copysign(step, centre)
+                if objective(further) <= objective(centre):
+                    break
+                centre = further
+        _golden_section_maximum(
+            objective, max(-BIAS_LOG_LIMIT, centre - step), min(BIAS_LOG_LIMIT, centre + step), BIAS_LOG_TOLERANCE
+        )
     log_bias = max(fits, key=lambda value: fits[value][0])
     best_objective, result = fits[log_bias]
+    # The starting value whose refinement gave the result: the nearest one.
+    best_start = min(BIAS_LOG_STARTS, key=lambda start: abs(start - log_bias))
     result.bias_fit = BiasFit(log_bias, best_objective, best_start, len(fits), abs(log_bias) >= BIAS_LOG_LIMIT)
     return result
 
