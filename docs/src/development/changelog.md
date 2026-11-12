@@ -15,6 +15,8 @@ Notable changes by version. Measurements behind each change are in the
   marginal posterior among the called dosages. Coordinates are marker-local. It uses only the
   standard library. The tests compare its likelihoods, posteriors, converged allele frequencies
   and genotypes with polyRAD 2.0.1 on stored reference values.
+- `call --selfing-rate` adjusts the Hardy-Weinberg prior for self-fertilisation, for inbred lines
+  and partly selfing species. Its priors and iterated results match polyRAD's `selfing.rate`.
 - `call` estimates the beta-binomial overdispersion from the read counts by maximum likelihood
   (`--overdispersion auto`, the default; a number sets it). On simulated diploid, tetraploid,
   hexaploid and mixed-ploidy populations it recovered the simulated value. polyRAD's default of 9

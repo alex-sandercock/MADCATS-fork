@@ -71,6 +71,29 @@ class PriorAndPosteriorTests(unittest.TestCase):
         self.assertEqual(call.hwe_prior(2, 0.25), [0.5625, 0.375, 0.0625])
         self.assertAlmostEqual(sum(call.hwe_prior(6, 0.37)), 1.0)
 
+    def test_selfing_moves_probability_to_the_homozygous_dosages(self):
+        for ploidy in (2, 4, 6):
+            random_mating = call.hwe_prior(ploidy, 0.3)
+            previous = random_mating
+            for selfing_rate in (0.2, 0.6, 0.95):
+                prior = call.hwe_prior(ploidy, 0.3, selfing_rate)
+                self.assertAlmostEqual(sum(prior), 1.0, places=12)
+                # Selfing changes genotype proportions, not the allele frequency.
+                self.assertAlmostEqual(call.posterior_mean_dosage(prior) / ploidy, 0.3, places=12)
+                self.assertGreater(prior[0], previous[0])
+                self.assertGreater(prior[ploidy], previous[ploidy])
+                previous = prior
+            self.assertEqual(call.hwe_prior(ploidy, 0.3, 1.0), [0.7] + [0.0] * (ploidy - 1) + [0.3])
+
+    def test_selfing_is_not_applied_to_odd_ploidy(self):
+        self.assertEqual(call.hwe_prior(3, 0.3, 0.5), call.hwe_prior(3, 0.3))
+        self.assertEqual(call.hwe_prior(3, 0.3, 1.0), [0.7, 0.0, 0.0, 0.3])
+
+    def test_gamete_dosages(self):
+        # A tetraploid with two copies passes on 0, 1 or 2 of them in 1, 4 and 1 of 6 gametes.
+        self.assertEqual(call.gamete_dosage_probabilities(2, 4), [1 / 6, 4 / 6, 1 / 6])
+        self.assertEqual(call.gamete_dosage_probabilities(1, 2), [0.5, 0.5])
+
     def test_posterior_falls_back_to_prior_when_nothing_is_possible(self):
         prior = [1.0, 0.0, 0.0]
         self.assertEqual(call.dosage_posterior([call.NEGATIVE_INFINITY, -1.0, -2.0], prior), prior)
@@ -295,6 +318,38 @@ class PolyradParityTests(unittest.TestCase):
                     self.assertAlmostEqual(posterior[dosage], record["posterior"][dosage], places=11)
                     compared += 1
         self.assertEqual(compared, sum(len(record["posterior"]) for record in fixture["single_pass"]["records"]))
+
+    def test_selfing_priors_match_polyrad(self):
+        cases = self.fixture["selfing"]["priors"]
+        self.assertEqual(len(cases), 36)
+        for case in cases:
+            prior = call.hwe_prior(case["ploidy"], case["allele_frequency"], case["selfing_rate"])
+            for value, expected in zip(prior, case["prior"]):
+                self.assertAlmostEqual(value, expected, places=13, msg=str(case))
+
+    def test_iteration_with_selfing_matches_polyrad(self):
+        fixture = self.fixture
+        settings = call.ModelSettings(
+            overdispersion=fixture["overdispersion"],
+            contamination_rate=fixture["contamination_rate"],
+            selfing_rate=fixture["selfing"]["selfing_rate"],
+            tolerance=fixture["iteration_tolerance"],
+            max_iterations=1000,
+        )
+        for columns in fixture["locus_columns"].values():
+            result = call.call_marker(self.locus_depths(columns), fixture["ploidy"], settings)
+            self.assertTrue(result.converged)
+            for column, frequency in zip(columns, result.allele_frequencies):
+                self.assertAlmostEqual(frequency, fixture["selfing"]["allele_frequency"][column], places=7)
+            for record in fixture["selfing"]["records"]:
+                position = self.position(record, columns)
+                if position is None:
+                    continue
+                sample, allele = position
+                for value, expected in zip(result.posteriors[sample][allele], record["posterior"]):
+                    self.assertAlmostEqual(value, expected, places=7)
+        # The selfing rate changed the result: the fixture's two runs differ.
+        self.assertNotEqual(fixture["selfing"]["allele_frequency"], fixture["iterated"]["allele_frequency"])
 
     def test_iterated_frequencies_posteriors_and_genotypes_match_polyrad(self):
         fixture = self.fixture
@@ -765,6 +820,32 @@ class CommandBehaviourTests(CommandTestCase):
 
         self.call(madc, "--ploidy", "4", "--overdispersion", "30")
         self.assertEqual(self.qc["overdispersion"], {"requested": 30.0, "used": 30.0})
+
+    def test_selfing_rate_favours_homozygous_calls(self):
+        # 17 Ref reads and 3 Alt reads: a heterozygote under random mating, but with nearly all
+        # samples inbred the same reads are better explained by a Ref homozygote with stray reads.
+        ref_depths = [30, 0, 28, 0, 31, 0, 27, 0, 33, 0, 29, 17]
+        alt_depths = [0, 30, 0, 29, 0, 32, 0, 28, 0, 31, 0, 3]
+        madc = self.write_madc(
+            [("M1", "Ref", REF_TAG, ref_depths), ("M1", "Alt", ALT_TAG, alt_depths)],
+            [f"s{number:02d}" for number in range(12)],
+        )
+        calls = {}
+        for selfing_rate in ("0", "0.999"):
+            prefix = self.call(madc, "--overdispersion", "9", "--min-gq", "0", "--selfing-rate", selfing_rate)
+            header, _, (record,) = self.vcf(prefix, "target")
+            calls[selfing_rate] = record["samples"][-1]
+        self.assertEqual(calls["0"]["GT"], "0/1")
+        self.assertEqual(calls["0.999"]["GT"], "0/0")
+        self.assertEqual(self.qc["parameters"]["selfing_rate"], 0.999)
+        self.assertTrue(any("a selfing rate of 0.999" in line for line in header))
+
+    def test_selfing_rate_needs_the_hwe_prior(self):
+        madc = self.write_madc([("M1", "Ref", REF_TAG, [9, 9]), ("M1", "Alt", ALT_TAG, [9, 9])], ["s1", "s2"])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as stderr:
+            madcats.main(["call", "--madc", str(madc), "--output-prefix", str(self.dir / "x"), "--prior", "uniform",
+                          "--selfing-rate", "0.5"])
+        self.assertIn("--prior hwe only", stderr.getvalue())
 
     def test_overdispersion_auto_falls_back_on_a_small_table(self):
         madc = self.write_madc(

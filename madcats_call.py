@@ -128,6 +128,8 @@ class ModelSettings:
     contamination_rate: fraction of a sample's reads expected to come from
         other samples.  Those reads carry an allele at its population frequency.
     prior: ``uniform`` or ``hwe``.
+    selfing_rate: with the ``hwe`` prior, the share of individuals that come
+        from self-fertilisation, from 0 (random mating) to 1 (fully inbred).
     tolerance: the ``hwe`` iteration stops once the mean absolute change in
         the marker's allele frequencies is at or below this.
     max_iterations: upper limit on ``hwe`` iterations.
@@ -136,6 +138,7 @@ class ModelSettings:
     overdispersion: float = DEFAULT_OVERDISPERSION
     contamination_rate: float = DEFAULT_CONTAMINATION_RATE
     prior: str = PRIOR_HWE
+    selfing_rate: float = 0.0
     tolerance: float = DEFAULT_TOLERANCE
     max_iterations: int = DEFAULT_MAX_ITERATIONS
 
@@ -146,6 +149,8 @@ class ModelSettings:
             raise ValueError("contamination_rate must be at least 0 and below 1")
         if self.prior not in PRIOR_CHOICES:
             raise ValueError(f"prior must be one of {', '.join(PRIOR_CHOICES)}")
+        if not 0 <= self.selfing_rate <= 1:
+            raise ValueError("selfing_rate must be between 0 and 1")
         if self.tolerance <= 0:
             raise ValueError("tolerance must be positive")
         if self.max_iterations < 1:
@@ -276,17 +281,88 @@ def uniform_prior(ploidy: int) -> List[float]:
     return [1.0 / (ploidy + 1)] * (ploidy + 1)
 
 
-def hwe_prior(ploidy: int, allele_frequency: float) -> List[float]:
-    """Dosage probabilities under Hardy-Weinberg proportions.
+def gamete_dosage_probabilities(parent_dosage: int, ploidy: int) -> List[float]:
+    """Probability that a gamete carries 0, 1, ..., ploidy / 2 copies of an allele.
 
-    Each of the ``ploidy`` chromosome copies carries the allele independently
-    with probability ``allele_frequency``, so the dosage is binomial.
+    The gamete receives half of the parent's chromosome copies, drawn without
+    replacement from the ``parent_dosage`` copies that carry the allele and
+    the rest that do not (polysomic inheritance without double reduction).
+    """
+    gamete_size = ploidy // 2
+    return [
+        math.comb(parent_dosage, copies) * math.comb(ploidy - parent_dosage, gamete_size - copies)
+        / math.comb(ploidy, gamete_size)
+        for copies in range(gamete_size + 1)
+    ]
+
+
+def _solve_linear_system(matrix: Sequence[Sequence[float]], right_hand_side: Sequence[float]) -> List[float]:
+    """Solve ``matrix @ x = right_hand_side`` by Gaussian elimination with row pivoting."""
+    size = len(right_hand_side)
+    rows = [list(matrix[index]) + [right_hand_side[index]] for index in range(size)]
+    for column in range(size):
+        pivot = max(range(column, size), key=lambda index: abs(rows[index][column]))
+        rows[column], rows[pivot] = rows[pivot], rows[column]
+        for index in range(column + 1, size):
+            factor = rows[index][column] / rows[column][column]
+            for position in range(column, size + 1):
+                rows[index][position] -= factor * rows[column][position]
+    solution = [0.0] * size
+    for index in range(size - 1, -1, -1):
+        remainder = rows[index][size] - sum(rows[index][position] * solution[position] for position in range(index + 1, size))
+        solution[index] = remainder / rows[index][index]
+    return solution
+
+
+@functools.lru_cache(maxsize=None)
+def _selfing_system(ploidy: int, selfing_rate: float) -> Tuple[Tuple[float, ...], ...]:
+    """The matrix ``I - selfing_rate * S`` of ``hwe_prior``'s selfing adjustment.
+
+    ``S[offspring][parent]`` is the probability that self-fertilising a
+    parent of one dosage gives an offspring of another: the offspring's
+    dosage is the sum of two gametes of the same parent.
+    """
+    size = ploidy + 1
+    selfed = [[0.0] * size for _ in range(size)]
+    for parent_dosage in range(size):
+        gamete = gamete_dosage_probabilities(parent_dosage, ploidy)
+        for first_copies, first_probability in enumerate(gamete):
+            for second_copies, second_probability in enumerate(gamete):
+                selfed[first_copies + second_copies][parent_dosage] += first_probability * second_probability
+    return tuple(
+        tuple((1.0 if row == column else 0.0) - selfing_rate * selfed[row][column] for column in range(size))
+        for row in range(size)
+    )
+
+
+def hwe_prior(ploidy: int, allele_frequency: float, selfing_rate: float = 0.0) -> List[float]:
+    """Dosage probabilities under Hardy-Weinberg proportions, optionally with self-fertilisation.
+
+    With random mating each of the ``ploidy`` chromosome copies carries the
+    allele independently with probability ``allele_frequency``, so the
+    dosage is binomial.
+
+    With a ``selfing_rate`` between 0 and 1, a share of each generation comes
+    from self-fertilisation and the rest from random mating.  The genotype
+    proportions that such a population settles at are those of equation 6 of
+    de Silva et al. (2005, Heredity 95:327-334), as in polyRAD:
+    ``(1 - s) * (I - s * S)^-1 * binomial``.  Selfing moves probability from
+    the intermediate dosages to 0 and ``ploidy``.  With a rate of 1 only
+    those two remain.  As in polyRAD, an odd ploidy is left at random-mating
+    proportions unless the rate is 1, since its gametes cannot carry half
+    the copies.
     """
     other_frequency = 1.0 - allele_frequency
-    return [
+    if selfing_rate >= 1.0:
+        return [other_frequency] + [0.0] * (ploidy - 1) + [allele_frequency]
+    random_mating = [
         math.comb(ploidy, dosage) * allele_frequency**dosage * other_frequency ** (ploidy - dosage)
         for dosage in range(ploidy + 1)
     ]
+    if selfing_rate <= 0.0 or ploidy % 2 != 0:
+        return random_mating
+    settled = _solve_linear_system(_selfing_system(ploidy, selfing_rate), random_mating)
+    return [(1.0 - selfing_rate) * probability for probability in settled]
 
 
 def dosage_posterior(log_likelihoods: Sequence[float], prior: Sequence[float]) -> List[float]:
@@ -354,7 +430,9 @@ def _marker_pass(
     priors: Dict[int, List[List[float]]] = {}
     for ploidy in set(ploidies):
         if settings.prior == PRIOR_HWE:
-            priors[ploidy] = [hwe_prior(ploidy, frequency) for frequency in allele_frequencies]
+            priors[ploidy] = [
+                hwe_prior(ploidy, frequency, settings.selfing_rate) for frequency in allele_frequencies
+            ]
         else:
             priors[ploidy] = [uniform_prior(ploidy)] * len(allele_frequencies)
 
@@ -578,10 +656,11 @@ def log_likelihood_of_counts(
 
     A sample's genotype is unknown, so the probability of its counts is the
     average over the possible dosages of the alternate allele, weighted by
-    their Hardy-Weinberg probabilities.  The samples' logs are added.
+    their Hardy-Weinberg probabilities (with ``settings.selfing_rate``).  The
+    samples' logs are added.
     """
     likelihood_frequency = frequency_for_likelihood(alternate_frequency, len(depths))
-    priors = {ploidy: hwe_prior(ploidy, alternate_frequency) for ploidy in set(ploidies)}
+    priors = {ploidy: hwe_prior(ploidy, alternate_frequency, settings.selfing_rate) for ploidy in set(ploidies)}
     total = 0.0
     for (reference_depth, alternate_depth), ploidy in zip(depths, ploidies):
         marker_depth = reference_depth + alternate_depth
@@ -615,6 +694,7 @@ def estimate_overdispersion(
     contamination_rate: float = DEFAULT_CONTAMINATION_RATE,
     grid: Sequence[float] = OVERDISPERSION_GRID,
     start: float = DEFAULT_OVERDISPERSION,
+    selfing_rate: float = 0.0,
 ) -> OverdispersionEstimate:
     """Choose the overdispersion that makes the observed read counts most probable.
 
@@ -650,13 +730,17 @@ def estimate_overdispersion(
     values_by_round: List[float] = []
     log_likelihood: Dict[float, float] = {}
     for _ in range(OVERDISPERSION_MAX_ROUNDS):
-        frequency_settings = ModelSettings(overdispersion=current, contamination_rate=contamination_rate)
+        frequency_settings = ModelSettings(
+            overdispersion=current, contamination_rate=contamination_rate, selfing_rate=selfing_rate
+        )
         alternate_frequencies = [
             call_marker(depths, ploidies, frequency_settings).allele_frequencies[1] for depths in markers
         ]
         log_likelihood = {}
         for value in grid:
-            settings = ModelSettings(overdispersion=value, contamination_rate=contamination_rate)
+            settings = ModelSettings(
+                overdispersion=value, contamination_rate=contamination_rate, selfing_rate=selfing_rate
+            )
             log_likelihood[value] = sum(
                 log_likelihood_of_counts(depths, ploidies, frequency, settings)
                 for depths, frequency in zip(markers, alternate_frequencies)
@@ -1317,9 +1401,12 @@ def model_description(settings: ModelSettings, overdispersion_estimated: bool = 
     """One sentence stating the genotype model and its inheritance assumption, for the VCF header."""
     source = ", estimated from the read counts" if overdispersion_estimated else ""
     if settings.prior == PRIOR_HWE:
+        mating = (
+            f"a selfing rate of {settings.selfing_rate:g}" if settings.selfing_rate > 0 else "random mating"
+        )
         prior = (
             "Hardy-Weinberg prior with one allele frequency per record estimated over all samples together; "
-            "it assumes random mating and that each chromosome copy is drawn independently "
+            f"it assumes {mating} and that each chromosome copy is drawn independently "
             "(polysomic inheritance in polyploids)"
         )
     else:
@@ -1413,7 +1500,7 @@ def _overdispersion_argument(value: str):
 
 
 def choose_overdispersion(
-    tasks: Sequence[MarkerTask], ploidies: Sequence[int], contamination_rate: float
+    tasks: Sequence[MarkerTask], ploidies: Sequence[int], contamination_rate: float, selfing_rate: float = 0.0
 ) -> Tuple[float, Dict[str, object]]:
     """Estimate the overdispersion for ``--overdispersion auto``.
 
@@ -1432,7 +1519,7 @@ def choose_overdispersion(
             continue
         counts_by_row, _ = _without_negative_cells(rows, sample_count)
         depths_by_marker.append(target_allele_depths(rows, counts_by_row, sample_count)[0])
-    estimate = estimate_overdispersion(depths_by_marker, ploidies, contamination_rate)
+    estimate = estimate_overdispersion(depths_by_marker, ploidies, contamination_rate, selfing_rate=selfing_rate)
     report: Dict[str, object] = {
         "estimate": estimate.value,
         "markers_used": estimate.markers_used,
@@ -1454,8 +1541,9 @@ def choose_overdispersion(
     if estimate.at_limit == "lowest":
         print(
             f"warning: the overdispersion estimate is the lowest value tried ({estimate.value:g}). The samples "
-            "probably do not follow Hardy-Weinberg proportions (inbred lines, or one family), which the estimate "
-            f"assumes. Using {DEFAULT_OVERDISPERSION:g}; set --overdispersion to a number to choose it yourself.",
+            "probably do not follow the genotype proportions the estimate assumes (Hardy-Weinberg, with "
+            f"--selfing-rate if given), as with inbred lines or one family. Using {DEFAULT_OVERDISPERSION:g}; "
+            "set --overdispersion to a number to choose it yourself.",
             file=sys.stderr,
         )
         return DEFAULT_OVERDISPERSION, report
@@ -1483,6 +1571,8 @@ def run_call(args: argparse.Namespace) -> int:
         raise MadcError(f"MADC not found: {madc}")
     started = time.time()
     vcf_types = tuple(vcf_type for vcf_type in VCF_TYPES if vcf_type in args.vcf)
+    if args.selfing_rate > 0 and args.prior != PRIOR_HWE:
+        raise MadcError("--selfing-rate applies to --prior hwe only")
 
     sample_names, rows_by_marker, count_overflow = read_count_table(madc)
     ploidy_by_sample = read_ploidy_table(Path(args.ploidy_file)) if args.ploidy_file else {}
@@ -1492,6 +1582,12 @@ def run_call(args: argparse.Namespace) -> int:
         print(
             f"note: {len(samples_not_in_madc):,} samples in {args.ploidy_file} are not in the MADC "
             f"(first: {samples_not_in_madc[0]})",
+            file=sys.stderr,
+        )
+
+    if 0 < args.selfing_rate < 1 and any(ploidy % 2 for ploidy in ploidies):
+        print(
+            "note: --selfing-rate is not applied to samples of odd ploidy; they keep random-mating proportions",
             file=sys.stderr,
         )
 
@@ -1508,7 +1604,9 @@ def run_call(args: argparse.Namespace) -> int:
 
     overdispersion_report: Dict[str, object] = {"requested": args.overdispersion}
     if args.overdispersion == OVERDISPERSION_AUTO:
-        overdispersion, estimate_report = choose_overdispersion(tasks, ploidies, args.contamination_rate)
+        overdispersion, estimate_report = choose_overdispersion(
+            tasks, ploidies, args.contamination_rate, args.selfing_rate
+        )
         overdispersion_report.update(estimate_report)
     else:
         overdispersion = args.overdispersion
@@ -1523,6 +1621,7 @@ def run_call(args: argparse.Namespace) -> int:
             overdispersion=overdispersion,
             contamination_rate=args.contamination_rate,
             prior=args.prior,
+            selfing_rate=args.selfing_rate,
             tolerance=args.tol,
             max_iterations=args.max_iterations,
         ),
@@ -1590,6 +1689,7 @@ def run_call(args: argparse.Namespace) -> int:
             "vcf": list(vcf_types),
             "ploidy": args.ploidy,
             "prior": args.prior,
+            "selfing_rate": args.selfing_rate,
             "overdispersion": args.overdispersion,
             "contamination_rate": args.contamination_rate,
             "tol": args.tol,
@@ -1708,6 +1808,14 @@ def add_call_command(subparsers) -> None:
             "genotype prior: uniform (every dosage equally probable) or hwe (Hardy-Weinberg proportions for "
             "allele frequencies estimated from all samples; assumes random mating and polysomic inheritance) "
             f"(default: {PRIOR_HWE})"
+        ),
+    )
+    calling.add_argument(
+        "--selfing-rate", type=_fraction, default=0.0,
+        help=(
+            "with --prior hwe, the share of individuals that come from self-fertilisation, from 0 (random "
+            "mating) to 1 (fully inbred lines); it moves prior probability from the intermediate dosages to "
+            "the two homozygous ones (default: 0)"
         ),
     )
     calling.add_argument(

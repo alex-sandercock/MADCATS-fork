@@ -11,6 +11,8 @@
 #                reproduce these almost exactly.
 #   iterated     IterateHWE run to a very tight tolerance, plus polyRAD's most
 #                probable genotypes after its correction to the ploidy.
+#   selfing      the Hardy-Weinberg prior with a selfing rate, for several
+#                ploidies, and IterateHWE with that selfing rate.
 # The committed JSON was made with the polyRAD version recorded inside it.
 
 suppressMessages(library(polyRAD))
@@ -18,6 +20,7 @@ suppressMessages(library(polyRAD))
 overdispersion <- 9
 contamination_rate <- 0.001
 iteration_tolerance <- 1e-10
+selfing_rate <- 0.4
 
 # Three loci with 2, 3 and 4 alleles; 16 samples of ploidy 2, 3, 4 and 6.
 set.seed(20240611)
@@ -82,6 +85,19 @@ iterated <- suppressMessages(IterateHWE(rad, tol = iteration_tolerance,
 genotypes <- GetProbableGenotypes(iterated, omit1allelePerLocus = FALSE,
                                   multiallelic = "correct")$genotypes
 
+selfed <- suppressMessages(suppressWarnings(
+  IterateHWE(rad, selfing.rate = selfing_rate, tol = iteration_tolerance, overdispersion = overdispersion)))
+selfing_priors <- list()
+for (ploidy in c(2L, 4L, 6L, 8L)) {
+  for (rate in c(0.1, selfing_rate, 0.95)) {
+    for (frequency in c(0.05, 0.3, 0.5)) {
+      selfing_priors[[length(selfing_priors) + 1]] <- list(
+        ploidy = ploidy, selfing_rate = rate, allele_frequency = frequency,
+        prior = as.vector(polyRAD:::.HWEpriors(c(allele = frequency), ploidy, rate)))
+    }
+  }
+}
+
 # Minimal JSON writer, so the script needs no package beyond polyRAD.
 to_json <- function(value) {
   if (is.list(value)) {
@@ -119,6 +135,12 @@ fixture <- list(
     allele_frequency = unname(iterated$alleleFreq),
     records = records(iterated, FALSE),
     genotypes = lapply(seq_len(nrow(genotypes)), function(row) unname(genotypes[row, ]))
+  ),
+  selfing = list(
+    selfing_rate = selfing_rate,
+    priors = selfing_priors,
+    allele_frequency = unname(selfed$alleleFreq),
+    records = records(selfed, FALSE)
   )
 )
 writeLines(to_json(fixture), "tests/fixtures/polyrad_parity.json")

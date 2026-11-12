@@ -53,6 +53,14 @@ independently, which holds for diploids and autopolyploids. It is not the expect
 disomic inheritance in an allopolyploid, in a biparental family, or when samples of different
 ploidy come from different populations. Use `--prior uniform` when it does not fit.
 
+For inbred lines and partly selfing species, `--selfing-rate` adjusts the Hardy-Weinberg prior: a
+share of each generation comes from self-fertilisation, which moves prior probability from the
+intermediate dosages to the two homozygous ones (the equilibrium proportions of de Silva et al.
+2005, as in polyRAD). At 1 only the two homozygous dosages have prior probability, so a
+heterozygote cannot be called; use a value just below 1, such as 0.99, to allow residual
+heterozygosity. It applies to samples of even ploidy; samples of odd ploidy keep random-mating
+proportions.
+
 ### What the model can and cannot say
 
 With **two alleles**, the dosage of the alternate allele fixes the genotype, so its posterior is
@@ -123,6 +131,7 @@ get haplotype records and off-target records.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--prior {uniform,hwe}` | `hwe` | Genotype prior (see [the genotype model](#the-genotype-model)) |
+| `--selfing-rate <FLOAT>` | 0 | With `--prior hwe`, the share of individuals that come from self-fertilisation: 0 is random mating, 1 is fully inbred lines |
 | `--overdispersion <auto\|FLOAT>` | `auto` | Beta-binomial overdispersion parameter, as in polyRAD. Lower values allow read fractions to stray further from the expected fraction. `auto` estimates it from the read counts (see below); a number sets it |
 | `--contamination-rate <FLOAT>` | 0.001 | Expected share of a sample's reads that come from other samples |
 | `--tol <FLOAT>` | 1e-5 | With `--prior hwe`, stop iterating a record once its allele frequencies change by no more than this on average |
