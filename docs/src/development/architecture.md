@@ -15,7 +15,7 @@ model on a finished table, not read processing. There is nothing to compile, and
 | `madcats.py` | Every command but `filter-paralogs` and `call`: library functions and the command line |
 | `madcats_paralogs.py` | `filter-paralogs`: genome alignment, marker placement, labels and the table filter |
 | `madcats_call.py` | `call`: the genotype model, what each VCF type counts, and VCF writing |
-| `scripts/make_polyrad_fixture.R` | Regenerates `tests/fixtures/polyrad_parity.json`, the polyRAD values the `call` tests compare against (needs R and polyRAD; the tests do not) |
+| `scripts/make_polyrad_fixture.R`, `scripts/make_updog_fixture.R` | Regenerate `tests/fixtures/polyrad_parity.json` and `tests/fixtures/updog_norm.json`, the polyRAD and updog values the `call` tests compare against (they need R with polyRAD or updog; the tests do not) |
 | `tests/` | Unit and end-to-end tests (`unittest`) |
 | `scripts/` | Diagnostic and conversion scripts (e.g. `madc_to_reference_tags.py`, `validate_inferred_design.py`) |
 | `docs/` | This documentation (mdBook), plus `DEVELOPMENT.md`, the long-form development record |

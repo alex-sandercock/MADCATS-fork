@@ -1,8 +1,8 @@
 """Tests of ``madcats call`` (madcats_call.py): the genotype model, then the command.
 
-The parity tests compare against values computed by polyRAD and stored in
-tests/fixtures/polyrad_parity.json (made by scripts/make_polyrad_fixture.R),
-so they run without R.
+The parity tests compare against values computed by polyRAD and updog and
+stored in tests/fixtures/ (made by scripts/make_polyrad_fixture.R and
+scripts/make_updog_fixture.R), so they run without R.
 """
 
 import contextlib
@@ -24,6 +24,7 @@ import madcats_call as call  # noqa: E402
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "madcats-demo"
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "polyrad_parity.json"
+UPDOG_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "updog_norm.json"
 
 
 def load_fixture():
@@ -102,6 +103,153 @@ class PriorAndPosteriorTests(unittest.TestCase):
         posterior = call.dosage_posterior([-5000.0, -5002.0, -9000.0], [1 / 3] * 3)
         self.assertAlmostEqual(sum(posterior), 1.0)
         self.assertAlmostEqual(posterior[0] / posterior[1], math.exp(2.0))
+
+
+class NormalPriorTests(unittest.TestCase):
+    def test_prior_is_a_normal_density_at_the_dosages(self):
+        prior = call.normal_prior(4, 1.5, 0.8)
+        self.assertAlmostEqual(sum(prior), 1.0, places=12)
+        # Ratio of two normal densities one dosage apart.
+        self.assertAlmostEqual(prior[2] / prior[1], math.exp(-(0.5**2 - 0.5**2) / (2 * 0.8**2)), places=12)
+        self.assertAlmostEqual(prior[3] / prior[2], math.exp(-(1.5**2 - 0.5**2) / (2 * 0.8**2)), places=12)
+
+    def test_very_narrow_and_very_wide_priors(self):
+        self.assertEqual(call.normal_prior(4, 2.0, call.NORMAL_PRIOR_MIN_SD), [0.0, 0.0, 1.0, 0.0, 0.0])
+        for probability in call.normal_prior(4, 2.0, call.NORMAL_PRIOR_MAX_SD):
+            self.assertAlmostEqual(probability, 0.2, places=5)
+
+    def test_fit_recovers_a_normal_shaped_distribution(self):
+        for ploidy, mean, standard_deviation in ((2, 0.7, 0.6), (4, 1.3, 0.9), (6, 4.4, 1.7), (4, 2.0, 0.35)):
+            weights = [150 * probability for probability in call.normal_prior(ploidy, mean, standard_deviation)]
+            fitted_mean, fitted_sd = call.fit_normal_prior(weights, ploidy, ploidy / 2, 1.0)
+            self.assertAlmostEqual(fitted_mean, mean, places=6)
+            self.assertAlmostEqual(fitted_sd, standard_deviation, places=6)
+
+    def test_fit_is_at_least_as_good_as_any_point_of_a_grid(self):
+        generator = random.Random(4)
+        for ploidy in (2, 4, 6):
+            for _ in range(12):
+                weights = [generator.random() ** 3 * 100 for _ in range(ploidy + 1)]
+                shares = [weight / sum(weights) for weight in weights]
+                mean, standard_deviation = call.fit_normal_prior(weights, ploidy, ploidy / 2, 1.0)
+                self.assertTrue(-1.0 <= mean <= ploidy + 1.0)
+                self.assertTrue(call.NORMAL_PRIOR_MIN_SD <= standard_deviation <= call.NORMAL_PRIOR_MAX_SD)
+                fitted = call.weighted_log_normal_prior(shares, ploidy, mean, standard_deviation)
+                for mean_step in range(41):
+                    for sd_step in range(61):
+                        grid_mean = -1.0 + (ploidy + 2.0) * mean_step / 40
+                        grid_sd = math.exp(math.log(1e-3) + math.log(1e6) * sd_step / 60)
+                        on_grid = call.weighted_log_normal_prior(shares, ploidy, grid_mean, grid_sd)
+                        self.assertLessEqual(on_grid, fitted + 1e-9)
+
+    def test_fit_handles_weights_on_one_dosage_or_on_the_two_ends(self):
+        mean, standard_deviation = call.fit_normal_prior([100, 0, 0, 0, 0], 4, 2.0, 1.0)
+        self.assertAlmostEqual(call.normal_prior(4, mean, standard_deviation)[0], 1.0, places=9)
+        # Two peaks cannot be matched by one normal shape; the best it can do is flat.
+        mean, standard_deviation = call.fit_normal_prior([50, 0, 0, 0, 50], 4, 2.0, 1.0)
+        for probability in call.normal_prior(4, mean, standard_deviation):
+            self.assertAlmostEqual(probability, 0.2, places=4)
+
+    def test_fit_is_never_worse_than_its_starting_values(self):
+        weights = [0.0, 0.0, 6.6, 63.4, 9.9, 0.1, 0.0]
+        shares = [weight / sum(weights) for weight in weights]
+        start = call.fit_normal_prior(weights, 6, 3.0, 1.0)
+        again = call.fit_normal_prior(weights, 6, *start)
+        self.assertGreaterEqual(
+            call.weighted_log_normal_prior(shares, 6, *again), call.weighted_log_normal_prior(shares, 6, *start) - 1e-13
+        )
+        self.assertAlmostEqual(again[0], start[0], places=7)
+        self.assertAlmostEqual(again[1], start[1], places=7)
+
+
+class NormalPriorMarkerTests(unittest.TestCase):
+    def test_inbred_tetraploids_keep_their_homozygous_calls(self):
+        # Every sample is homozygous.  The Hardy-Weinberg prior expects mostly intermediate
+        # dosages at this allele frequency; the fitted normal prior becomes flat instead.
+        table = simulated_two_allele_markers(40, 4, markers=1, samples=80, genotypes="inbred")[0]
+        norm = call.call_marker(table, [4] * 80, call.ModelSettings(prior=call.PRIOR_NORM, overdispersion=40))
+        self.assertTrue(norm.converged)
+        prior = norm.priors[4][1]
+        self.assertLess(max(prior) - min(prior), 0.05)
+        hwe = call.call_marker(table, [4] * 80, call.ModelSettings(prior=call.PRIOR_HWE, overdispersion=40))
+        self.assertLess(hwe.priors[4][1][0] + hwe.priors[4][1][4], 0.3)
+
+    def test_each_ploidy_group_gets_its_own_fit(self):
+        diploids = simulated_two_allele_markers(40, 2, markers=1, samples=30, seed=3)[0]
+        hexaploids = simulated_two_allele_markers(40, 6, markers=1, samples=30, seed=5)[0]
+        settings = call.ModelSettings(prior=call.PRIOR_NORM, overdispersion=40)
+        together = call.call_marker(diploids + hexaploids, [2] * 30 + [6] * 30, settings)
+        self.assertEqual(sorted(together.normal_prior_parameters), [2, 6])
+        self.assertEqual([len(together.priors[2][1]), len(together.priors[6][1])], [3, 7])
+        # The groups share only the allele frequency used by the contamination term, so a
+        # group fitted with the other present is almost the group fitted alone.
+        alone = call.call_marker(hexaploids, [6] * 30, settings)
+        for with_others, by_itself in zip(together.priors[6][1], alone.priors[6][1]):
+            self.assertAlmostEqual(with_others, by_itself, places=3)
+
+    def test_small_ploidy_group_uses_hardy_weinberg_proportions(self):
+        tetraploids = simulated_two_allele_markers(40, 4, markers=1, samples=40, seed=7)[0]
+        triploids = [[20, 9], [31, 0], [8, 19]]
+        result = call.call_marker(
+            tetraploids + triploids, [4] * 40 + [3] * 3, call.ModelSettings(prior=call.PRIOR_NORM, overdispersion=40)
+        )
+        self.assertEqual(sorted(result.normal_prior_parameters), [4])
+        # The triploids' prior is binomial for an allele frequency close to the final estimate.
+        binomial = call.hwe_prior(3, result.allele_frequencies[1])
+        for used, expected in zip(result.priors[3][1], binomial):
+            self.assertAlmostEqual(used, expected, places=3)
+
+
+class UpdogParityTests(unittest.TestCase):
+    """The normal-shaped prior of madcats_call against updog's norm model."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(UPDOG_FIXTURE_PATH) as handle:
+            cls.fixture = json.load(handle)
+
+    def test_prior_fits_match_updog(self):
+        cases = self.fixture["prior_fits"]
+        self.assertEqual(len(cases), 14)
+        for case in cases:
+            ploidy, weights = case["ploidy"], case["weights"]
+            mean, standard_deviation = call.fit_normal_prior(weights, ploidy, ploidy / 2, 1.0)
+            for value, expected in zip(call.normal_prior(ploidy, mean, standard_deviation), case["prior"]):
+                self.assertAlmostEqual(value, expected, places=4, msg=str(weights))
+            # Where the weights are flat or two-peaked, many parameter values give the same
+            # prior, so the comparison is on how well each fits, not on the parameters.
+            shares = [weight / sum(weights) for weight in weights]
+            ours = call.weighted_log_normal_prior(shares, ploidy, mean, standard_deviation)
+            theirs = call.weighted_log_normal_prior(shares, ploidy, case["mean"], case["standard_deviation"])
+            self.assertGreaterEqual(ours, theirs - 1e-9, msg=str(weights))
+
+    def test_complete_fits_match_updog(self):
+        fixture = self.fixture
+        # updog's rho is 1 / (overdispersion + 1); the fixture stores the value on our scale.
+        settings = call.ModelSettings(
+            prior=call.PRIOR_NORM, overdispersion=fixture["overdispersion"], contamination_rate=0.0,
+            tolerance=1e-10, max_iterations=5000,
+        )
+        self.assertEqual(len(fixture["markers"]), 4)
+        for marker in fixture["markers"]:
+            ploidy = marker["ploidy"]
+            depths = [
+                [allele_depth, marker_depth - allele_depth]
+                for allele_depth, marker_depth in zip(marker["allele_depth"], marker["marker_depth"])
+            ]
+            result = call.call_marker(depths, [ploidy] * len(depths), settings)
+            self.assertTrue(result.converged, marker["name"])
+            for value, expected in zip(result.priors[ploidy][0], marker["prior"]):
+                self.assertAlmostEqual(value, expected, places=4, msg=marker["name"])
+            for sample, expected_posterior in enumerate(marker["posteriors"]):
+                # updog keeps a sequencing-error rate of at least 1e-6, so a dosage of 0 keeps a
+                # little probability (up to 5e-4 here) for a sample with a few reads of the allele.
+                for value, expected in zip(result.posteriors[sample][0], expected_posterior):
+                    self.assertAlmostEqual(value, expected, delta=1e-3, msg=f"{marker['name']} sample {sample}")
+                self.assertEqual(
+                    call.most_probable_dosage(result.posteriors[sample][0]), marker["genotypes"][sample],
+                    msg=f"{marker['name']} sample {sample}",
+                )
 
 
 class MarkerTests(unittest.TestCase):
@@ -839,6 +987,22 @@ class CommandBehaviourTests(CommandTestCase):
         self.assertEqual(calls["0.999"]["GT"], "0/0")
         self.assertEqual(self.qc["parameters"]["selfing_rate"], 0.999)
         self.assertTrue(any("a selfing rate of 0.999" in line for line in header))
+
+    def test_norm_prior_is_stated_in_the_header_and_small_groups_are_reported(self):
+        table = simulated_two_allele_markers(40, 4, markers=4, samples=30, genotypes="inbred")
+        madc = self.madc_from_simulation(table)
+        ploidy_file = self.dir / "ploidy.tsv"
+        ploidy_file.write_text("s00\t2\ns01\t2\n")
+        prefix = self.call(madc, "--ploidy", "4", "--ploidy-file", ploidy_file, "--prior", "norm",
+                           "--overdispersion", "40")
+        header, _, records = self.vcf(prefix, "target")
+        self.assertTrue(any("normal-shaped prior over dosages" in line for line in header))
+        self.assertEqual(self.qc["parameters"]["prior"], "norm")
+        self.assertEqual(self.qc["samples"]["ploidies_using_hwe_under_norm_prior"], [2])
+        self.assertIn("fewer than 10 samples have ploidy 2", self.stderr)
+        # Inbred tetraploids are called homozygous, never as an intermediate dosage.
+        called = {sample["GT"] for record in records for sample in record["samples"][2:]}
+        self.assertLessEqual(called, {"0/0/0/0", "1/1/1/1", "./././."})
 
     def test_selfing_rate_needs_the_hwe_prior(self):
         madc = self.write_madc([("M1", "Ref", REF_TAG, [9, 9]), ("M1", "Alt", ALT_TAG, [9, 9])], ["s1", "s2"])

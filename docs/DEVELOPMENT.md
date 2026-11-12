@@ -1736,6 +1736,33 @@ unbiased markers and trails it by 2–4 points on biased ones. A prototype of a
 normal-shaped prior in the `call` engine (not in the repository) changed these
 figures by at most 1.5 points.
 
+**The norm prior (`--prior norm`).** updog's `norm` genotype distribution was
+added as a prior: dosage probabilities proportional to a normal density, with
+a mean and standard deviation fitted to the summed posteriors in every
+iteration. The fit is exact, since the prior depends on the samples only
+through those sums. It uses Newton's method on the two natural parameters,
+where the function has a single peak, and searches the edges of updog's
+parameter limits when the peak lies outside them; it takes 0.2 ms on average.
+On 130 sets of dosage weights no point of a fine grid fitted better.
+
+`scripts/make_updog_fixture.R` stores updog 2.1.7 values in
+`tests/fixtures/updog_norm.json`. For 14 sets of weights (ploidies 2 to 8;
+one peak, rare and common alleles, two peaks, flat, a single class) the fitted
+priors agree to 2e-5. For four simulated markers (random-mating tetraploid,
+one hexaploid family, inbred diploid, rare-allele tetraploid), fitted by
+updog with its bias, sequencing error and overdispersion held fixed, the
+priors agree to 1e-5 and every genotype is the same. Posteriors agree to
+1e-6 except for samples with a few reads of an allele, where updog's minimum
+sequencing-error rate of 1e-6 leaves dosage 0 a probability of up to 5e-4.
+
+Each ploidy among the samples is fitted separately, and a ploidy with fewer
+than 10 samples uses Hardy-Weinberg proportions. On the two alfalfa F1
+populations the norm prior agreed with the published dosages as often as HWE
+did (90.38% against 90.80%, and 89.78% against 89.93%, unfiltered) and took
+about 35% longer (29 s against 22 s, and 37 s against 27 s, for all 3,000
+markers on four workers). The overdispersion estimate still assumes
+Hardy-Weinberg proportions.
+
 The processed layout of these files has a `readCountSum` column before the
 samples, which `call` skips.
 

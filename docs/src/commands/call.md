@@ -31,7 +31,8 @@ contig in the header, and a `##madcatsCoordinates` line says so.
 ### The genotype model
 
 The model is adapted from [polyRAD](https://github.com/lvclark/polyRAD) (Clark, Lipka and Sacks
-2019). Within a record each allele is considered on its own, against all the other alleles
+2019), with the `norm` prior of [updog](https://github.com/dcgerard/updog) (Gerard and Ferrão
+2020) as an option. Within a record each allele is considered on its own, against all the other alleles
 together:
 
 1. **Likelihood.** In a sample of ploidy *P* an allele can be present in 0 to *P* copies (its
@@ -42,16 +43,27 @@ together:
    expected fraction.
 2. **Prior.** `--prior uniform` makes every dosage equally probable. `--prior hwe` (the default)
    uses Hardy-Weinberg proportions for the allele's frequency, estimated over all the samples
-   together.
+   together. `--prior norm` gives the dosages a normal shape, with a mean and a spread fitted to
+   the samples.
 3. **Posterior.** Prior times likelihood, normalised over the dosages.
-4. **Iteration** (`hwe` only). The allele frequencies are re-estimated from the posteriors and
-   steps 1–3 repeat until the frequencies change by no more than `--tol`, or `--max-iterations` is
-   reached. Each record converges on its own.
+4. **Iteration** (`hwe` and `norm`). The allele frequencies, and with `norm` the prior's mean and
+   spread, are re-estimated from the posteriors and steps 1–3 repeat until they change by no more
+   than `--tol`, or `--max-iterations` is reached. Each record converges on its own.
 
 The Hardy-Weinberg prior assumes random mating and that every chromosome copy is drawn
 independently, which holds for diploids and autopolyploids. It is not the expectation under
 disomic inheritance in an allopolyploid, in a biparental family, or when samples of different
-ploidy come from different populations. Use `--prior uniform` when it does not fit.
+ploidy come from different populations. Use `--prior norm` or `--prior uniform` when it does not
+fit.
+
+The norm prior makes no assumption about mating. Its dosage probabilities are proportional to a
+normal density at the dosages 0 to *P*, so it can be narrower than Hardy-Weinberg proportions (one
+family) or wider (subpopulations), and when the dosages have two peaks (inbred lines) it flattens
+out. It is updog's `norm` genotype distribution, fitted the way updog fits it; with the same
+likelihood, `call` and updog reach the same prior and the same genotypes. It is fitted separately
+for each ploidy among the samples, since a shape over the dosages of one ploidy says nothing about
+another. A ploidy with fewer than 10 samples uses Hardy-Weinberg proportions instead; `call` says
+so and lists those ploidies in the QC JSON. In a haplotype record every allele gets its own fit.
 
 For inbred lines and partly selfing species, `--selfing-rate` adjusts the Hardy-Weinberg prior: a
 share of each generation comes from self-fertilisation, which moves prior probability from the
@@ -130,12 +142,12 @@ get haplotype records and off-target records.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--prior {uniform,hwe}` | `hwe` | Genotype prior (see [the genotype model](#the-genotype-model)) |
+| `--prior {uniform,hwe,norm}` | `hwe` | Genotype prior (see [the genotype model](#the-genotype-model)) |
 | `--selfing-rate <FLOAT>` | 0 | With `--prior hwe`, the share of individuals that come from self-fertilisation: 0 is random mating, 1 is fully inbred lines |
 | `--overdispersion <auto\|FLOAT>` | `auto` | Beta-binomial overdispersion parameter, as in polyRAD. Lower values allow read fractions to stray further from the expected fraction. `auto` estimates it from the read counts (see below); a number sets it |
 | `--contamination-rate <FLOAT>` | 0.001 | Expected share of a sample's reads that come from other samples |
-| `--tol <FLOAT>` | 1e-5 | With `--prior hwe`, stop iterating a record once its allele frequencies change by no more than this on average |
-| `--max-iterations <INT>` | 100 | With `--prior hwe`, the most iterations a record may take |
+| `--tol <FLOAT>` | 1e-5 | With `--prior hwe` or `norm`, stop iterating a record once its allele frequencies (and, with `norm`, its prior probabilities) change by no more than this |
+| `--max-iterations <INT>` | 100 | With `--prior hwe` or `norm`, the most iterations a record may take |
 
 ### Choosing the overdispersion
 

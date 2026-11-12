@@ -17,7 +17,9 @@ Coordinates are marker-local: CHROM is the marker (CloneID) and POS is a
 1-based position on its Ref tag.
 
 The statistical model is adapted from polyRAD (Clark, Lipka and Sacks 2019,
-G3 9:663-673; https://github.com/lvclark/polyRAD, GPL >= 2).  In a record,
+G3 9:663-673; https://github.com/lvclark/polyRAD, GPL >= 2).  The ``norm``
+prior is the one of updog (Gerard and Ferrao 2020, Bioinformatics
+36:1795-1800; https://github.com/dcgerard/updog, GPL >= 3).  In a record,
 each allele is considered on its own against all the other alleles together,
 which turns a multiallelic record into one two-outcome problem per allele:
 
@@ -32,11 +34,13 @@ which turns a multiallelic record into one two-outcome problem per allele:
    each of the P chromosome copies carries the allele independently.  That is
    the expectation for a diploid or an autopolyploid in a randomly mating
    population.  It is not the expectation under disomic inheritance in an
-   allopolyploid, or in a family.
+   allopolyploid, or in a family.  The ``norm`` prior makes no such
+   assumption: the dosage probabilities follow a normal shape whose mean and
+   spread are fitted to the samples of each ploidy.
 3. Posterior.  Prior times likelihood, normalised over the dosages.
-4. Iteration (``hwe`` only).  The allele frequencies are re-estimated from
-   the posterior mean dosages and steps 1-3 repeat until the frequencies
-   stop changing.  Records do not share any parameter, so each converges on
+4. Iteration (``hwe`` and ``norm``).  The allele frequencies, and for
+   ``norm`` the prior's two parameters, are re-estimated from the posteriors
+   and steps 1-3 repeat until they stop changing.  Records do not share any parameter, so each converges on
    its own (polyRAD stops all loci together, on their mean change).
 
 The posteriors are *marginal*: one distribution per allele, not a joint
@@ -53,7 +57,7 @@ exponentiated, so a dosage that the reads make very improbable keeps a
 usable value at any read depth.
 
 Reading map: the model (``allele_log_likelihoods``, ``hwe_prior``,
-``dosage_posterior``, ``call_marker``); from marginal posteriors to one
+``normal_prior``, ``fit_normal_prior``, ``dosage_posterior``, ``call_marker``); from marginal posteriors to one
 genotype (``correct_dosages_to_ploidy``, ``best_dosages_summing_to_ploidy``);
 the overdispersion estimate (``estimate_overdispersion``); input
 (``read_count_table``, ``read_ploidy_table``); what each VCF type counts
@@ -105,7 +109,8 @@ from madcats import (
 
 PRIOR_UNIFORM = "uniform"
 PRIOR_HWE = "hwe"
-PRIOR_CHOICES = (PRIOR_UNIFORM, PRIOR_HWE)
+PRIOR_NORM = "norm"
+PRIOR_CHOICES = (PRIOR_UNIFORM, PRIOR_HWE, PRIOR_NORM)
 
 # polyRAD's defaults: AddGenotypeLikelihood(overdispersion = 9), readDArTag(contamRate = 0.001)
 # and IterateHWE(tol = 1e-5).  polyRAD has no iteration limit.  The command estimates the
@@ -128,7 +133,7 @@ class ModelSettings:
         binomial as it grows.
     contamination_rate: fraction of a sample's reads expected to come from
         other samples.  Those reads carry an allele at its population frequency.
-    prior: ``uniform`` or ``hwe``.
+    prior: ``uniform``, ``hwe`` or ``norm`` (see ``normal_prior``).
     selfing_rate: with the ``hwe`` prior, the share of individuals that come
         from self-fertilisation, from 0 (random mating) to 1 (fully inbred).
     tolerance: the ``hwe`` iteration stops once the mean absolute change in
@@ -168,6 +173,12 @@ class MarkerCall:
     and posteriors were computed from the estimates of the round before, which
     differ from the final ones by ``final_change`` on average.
 
+    ``priors`` holds the prior the posteriors were computed with, as
+    ``[ploidy][allele][dosage]``.  With the ``norm`` prior,
+    ``normal_prior_parameters`` holds the last fitted
+    ``(mean, standard deviation)`` as ``[ploidy][allele]``, for the ploidy
+    groups large enough to be fitted.
+
     ``callable`` is False when no sample has a read at the marker: there is
     then no allele frequency to start from, and the other fields are empty.
     """
@@ -179,6 +190,8 @@ class MarkerCall:
     iterations: int = 0
     final_change: Optional[float] = None
     converged: bool = True
+    priors: Dict[int, List[List[float]]] = dataclasses.field(default_factory=dict)
+    normal_prior_parameters: Dict[int, List[Tuple[float, float]]] = dataclasses.field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +379,163 @@ def hwe_prior(ploidy: int, allele_frequency: float, selfing_rate: float = 0.0) -
     return [(1.0 - selfing_rate) * probability for probability in settled]
 
 
+# Limits on the two parameters of the normal-shaped prior, as in updog.  The largest
+# standard deviation makes the prior practically uniform.
+NORMAL_PRIOR_MIN_SD = 1e-8
+NORMAL_PRIOR_MAX_SD = 1000.0
+NORMAL_PRIOR_MEAN_MARGIN = 1.0     # the mean may lie this far below 0 or above the ploidy
+# A ploidy group smaller than this uses the Hardy-Weinberg prior instead: two prior
+# parameters cannot be estimated from a handful of samples.
+NORMAL_PRIOR_MIN_SAMPLES = 10
+
+
+def _log_normal_prior(ploidy: int, mean: float, standard_deviation: float) -> List[float]:
+    """Logarithms of ``normal_prior``; finite even where the probability itself rounds to zero."""
+    exponents = [-((dosage - mean) ** 2) / (2.0 * standard_deviation**2) for dosage in range(ploidy + 1)]
+    largest = max(exponents)
+    log_total = largest + math.log(sum(math.exp(exponent - largest) for exponent in exponents))
+    return [exponent - log_total for exponent in exponents]
+
+
+def normal_prior(ploidy: int, mean: float, standard_deviation: float) -> List[float]:
+    """Dosage probabilities proportional to a normal density at 0, 1, ..., ``ploidy``.
+
+    This is updog's ``norm`` genotype distribution (Gerard and Ferrao 2020,
+    Bioinformatics 36:1795-1800).  With two parameters it can be narrower or
+    wider than Hardy-Weinberg proportions, so it does not assume random mating.
+    """
+    return [math.exp(log_probability) for log_probability in _log_normal_prior(ploidy, mean, standard_deviation)]
+
+
+def weighted_log_normal_prior(weights: Sequence[float], ploidy: int, mean: float, standard_deviation: float) -> float:
+    """Sum of ``weight * log(prior)`` over the dosages: what ``fit_normal_prior`` maximises."""
+    log_prior = _log_normal_prior(ploidy, mean, standard_deviation)
+    return sum(weight * log_probability for weight, log_probability in zip(weights, log_prior) if weight > 0.0)
+
+
+def _golden_section_maximum(function, low: float, high: float, tolerance: float = 1e-10) -> float:
+    """The argument between ``low`` and ``high`` at which a single-peaked function is highest."""
+    ratio = (math.sqrt(5.0) - 1.0) / 2.0
+    inner_low, inner_high = high - ratio * (high - low), low + ratio * (high - low)
+    value_low, value_high = function(inner_low), function(inner_high)
+    while high - low > tolerance:
+        if value_low < value_high:
+            low, inner_low, value_low = inner_low, inner_high, value_high
+            inner_high = low + ratio * (high - low)
+            value_high = function(inner_high)
+        else:
+            high, inner_high, value_high = inner_high, inner_low, value_low
+            inner_low = high - ratio * (high - low)
+            value_low = function(inner_low)
+    return (low + high) / 2.0
+
+
+def _normal_prior_newton_fit(shares: Sequence[float], ploidy: int, mean: float, standard_deviation: float):
+    """Fit the normal-shaped prior without limits on its parameters, by Newton's method.
+
+    The prior is written as ``log probability = a * dosage + b * dosage**2 -
+    constant``, with ``a = mean / sd**2`` and ``b = -1 / (2 * sd**2)``.  In
+    ``a`` and ``b`` the weighted log prior has a single peak, reached where
+    the prior's mean dosage and mean squared dosage equal those of
+    ``shares``.  Returns ``(a, b)``, or None when the iteration does not
+    settle (the shares sit on one or two dosages and the peak is at infinity).
+    A step that cannot improve the fit any further, to within rounding, means
+    the peak has been reached.
+    """
+    dosages = range(ploidy + 1)
+    target_first = sum(share * dosage for share, dosage in zip(shares, dosages))
+    target_second = sum(share * dosage**2 for share, dosage in zip(shares, dosages))
+    linear, quadratic = mean / standard_deviation**2, -1.0 / (2.0 * standard_deviation**2)
+
+    def prior_and_objective(linear_term: float, quadratic_term: float):
+        exponents = [linear_term * dosage + quadratic_term * dosage**2 for dosage in dosages]
+        largest = max(exponents)
+        unnormalised = [math.exp(exponent - largest) for exponent in exponents]
+        total = sum(unnormalised)
+        objective = linear_term * target_first + quadratic_term * target_second - largest - math.log(total)
+        return [value / total for value in unnormalised], objective
+
+    prior, objective = prior_and_objective(linear, quadratic)
+    for _ in range(100):
+        moments = [
+            sum(probability * dosage**power for probability, dosage in zip(prior, dosages)) for power in (1, 2, 3, 4)
+        ]
+        gradient_first, gradient_second = target_first - moments[0], target_second - moments[1]
+        # Variances and covariance of dosage and squared dosage under the current prior.
+        variance_first = moments[1] - moments[0] ** 2
+        variance_second = moments[3] - moments[1] ** 2
+        covariance = moments[2] - moments[0] * moments[1]
+        determinant = variance_first * variance_second - covariance**2
+        if determinant <= 1e-300:
+            return None
+        step_linear = (variance_second * gradient_first - covariance * gradient_second) / determinant
+        step_quadratic = (variance_first * gradient_second - covariance * gradient_first) / determinant
+        scale = 1.0
+        while scale > 1e-8:
+            candidate = prior_and_objective(linear + scale * step_linear, quadratic + scale * step_quadratic)
+            if candidate[1] >= objective:
+                break
+            scale /= 2.0
+        else:
+            return linear, quadratic
+        linear, quadratic = linear + scale * step_linear, quadratic + scale * step_quadratic
+        improvement = candidate[1] - objective
+        prior, objective = candidate
+        if improvement < 1e-14:
+            return linear, quadratic
+    return None
+
+
+def fit_normal_prior(
+    dosage_weights: Sequence[float], ploidy: int, mean: float, standard_deviation: float
+) -> Tuple[float, float]:
+    """The mean and standard deviation of the normal-shaped prior that best fit dosage weights.
+
+    ``dosage_weights[d]`` is the summed posterior probability of dosage ``d``
+    over the samples: the expected number of samples with that dosage.  The
+    fit maximises ``sum(weight * log(prior))``, which is the prior's update
+    in an EM iteration, and is exact because the prior depends on the samples
+    only through these sums.  ``mean`` and ``standard_deviation`` are the
+    starting values, usually the previous fit.
+
+    The parameters are kept within updog's limits: a mean from -1 to
+    ploidy + 1 and a standard deviation up to 1000.  The search first ignores
+    the limits.  If the best fit then lies outside them, the best fit within
+    them lies on their edge, because the function being maximised has a
+    single peak; the two edges for the mean are searched along the standard
+    deviation.  (The third edge, the largest standard deviation, is a
+    practically uniform prior and is where those searches end if nothing
+    fits better.)
+    """
+    total = sum(dosage_weights)
+    shares = [weight / total for weight in dosage_weights]
+    lowest_mean, highest_mean = -NORMAL_PRIOR_MEAN_MARGIN, ploidy + NORMAL_PRIOR_MEAN_MARGIN
+
+    def objective(candidate_mean: float, candidate_sd: float) -> float:
+        return weighted_log_normal_prior(shares, ploidy, candidate_mean, candidate_sd)
+
+    unlimited = _normal_prior_newton_fit(shares, ploidy, mean, standard_deviation)
+    if unlimited is not None and unlimited[1] < 0.0:
+        linear, quadratic = unlimited
+        fitted_sd = math.sqrt(-1.0 / (2.0 * quadratic))
+        fitted_mean = -linear / (2.0 * quadratic)
+        if lowest_mean <= fitted_mean <= highest_mean and NORMAL_PRIOR_MIN_SD <= fitted_sd <= NORMAL_PRIOR_MAX_SD:
+            return fitted_mean, fitted_sd
+
+    # The starting values are a candidate too, so that a fit is never worse than the one before.
+    start_mean = min(highest_mean, max(lowest_mean, mean))
+    start_sd = min(NORMAL_PRIOR_MAX_SD, max(NORMAL_PRIOR_MIN_SD, standard_deviation))
+    candidates = [(objective(start_mean, start_sd), start_mean, start_sd)]
+    for edge_mean in (lowest_mean, highest_mean):
+        log_sd = _golden_section_maximum(
+            lambda value: objective(edge_mean, math.exp(value)),
+            math.log(NORMAL_PRIOR_MIN_SD), math.log(NORMAL_PRIOR_MAX_SD),
+        )
+        candidates.append((objective(edge_mean, math.exp(log_sd)), edge_mean, math.exp(log_sd)))
+    _, best_mean, best_sd = max(candidates)
+    return best_mean, best_sd
+
+
 def dosage_posterior(log_likelihoods: Sequence[float], prior: Sequence[float]) -> List[float]:
     """Posterior probability of each dosage: prior times likelihood, normalised.
 
@@ -418,25 +588,74 @@ def depth_ratio_frequencies(depths: Sequence[Sequence[int]]) -> Optional[List[fl
     return [total / samples_with_reads for total in share_totals]
 
 
+def _frequency_priors(
+    ploidy_groups: Sequence[int], allele_frequencies: Sequence[float], settings: ModelSettings
+) -> Dict[int, List[List[float]]]:
+    """Priors that follow from the allele frequencies alone, as ``[ploidy][allele][dosage]``.
+
+    Uniform for the ``uniform`` prior and Hardy-Weinberg proportions
+    otherwise.  The ``norm`` prior starts from the latter and is then fitted
+    (``_fitted_normal_priors``).  Samples of the same ploidy share a prior.
+    """
+    if settings.prior == PRIOR_UNIFORM:
+        return {ploidy: [uniform_prior(ploidy)] * len(allele_frequencies) for ploidy in ploidy_groups}
+    return {
+        ploidy: [hwe_prior(ploidy, frequency, settings.selfing_rate) for frequency in allele_frequencies]
+        for ploidy in ploidy_groups
+    }
+
+
+def _fitted_normal_priors(
+    posteriors: Sequence[Sequence[Sequence[float]]],
+    ploidies: Sequence[int],
+    allele_frequencies: Sequence[float],
+    previous_parameters: Dict[int, List[Tuple[float, float]]],
+) -> Tuple[Dict[int, List[List[float]]], Dict[int, List[Tuple[float, float]]]]:
+    """Normal-shaped priors fitted to the current posteriors, one per ploidy group and allele.
+
+    Returns the priors as ``[ploidy][allele][dosage]`` and their
+    ``(mean, standard deviation)`` as ``[ploidy][allele]``.  Each ploidy
+    group is fitted on its own samples, because a normal shape over the
+    dosages of one ploidy says nothing about another.  A group with fewer
+    than ``NORMAL_PRIOR_MIN_SAMPLES`` samples gets the Hardy-Weinberg prior
+    for the marker's allele frequencies instead, and no parameters.
+    """
+    priors: Dict[int, List[List[float]]] = {}
+    parameters: Dict[int, List[Tuple[float, float]]] = {}
+    for ploidy in set(ploidies):
+        group = [
+            sample_posteriors for sample_posteriors, sample_ploidy in zip(posteriors, ploidies) if sample_ploidy == ploidy
+        ]
+        if len(group) < NORMAL_PRIOR_MIN_SAMPLES:
+            priors[ploidy] = [hwe_prior(ploidy, frequency) for frequency in allele_frequencies]
+            continue
+        priors[ploidy], parameters[ploidy] = [], []
+        for allele, frequency in enumerate(allele_frequencies):
+            dosage_weights = [
+                sum(sample_posteriors[allele][dosage] for sample_posteriors in group) for dosage in range(ploidy + 1)
+            ]
+            if ploidy in previous_parameters:
+                start_mean, start_sd = previous_parameters[ploidy][allele]
+            else:
+                # The first fit starts from the binomial's mean and spread.
+                start_mean = ploidy * frequency
+                start_sd = max(0.1, math.sqrt(ploidy * frequency * (1.0 - frequency)))
+            mean, standard_deviation = fit_normal_prior(dosage_weights, ploidy, start_mean, start_sd)
+            parameters[ploidy].append((mean, standard_deviation))
+            priors[ploidy].append(normal_prior(ploidy, mean, standard_deviation))
+    return priors, parameters
+
+
 def _marker_pass(
     depths: Sequence[Sequence[int]],
     ploidies: Sequence[int],
     allele_frequencies: Sequence[float],
+    priors: Dict[int, List[List[float]]],
     settings: ModelSettings,
 ) -> Tuple[List[List[List[float]]], List[List[List[float]]]]:
-    """Likelihoods and posteriors of every sample and allele for given allele frequencies."""
+    """Likelihoods and posteriors of every sample and allele for given allele frequencies and priors."""
     sample_count = len(depths)
     likelihood_frequencies = [frequency_for_likelihood(frequency, sample_count) for frequency in allele_frequencies]
-    # Samples of the same ploidy share their priors.
-    priors: Dict[int, List[List[float]]] = {}
-    for ploidy in set(ploidies):
-        if settings.prior == PRIOR_HWE:
-            priors[ploidy] = [
-                hwe_prior(ploidy, frequency, settings.selfing_rate) for frequency in allele_frequencies
-            ]
-        else:
-            priors[ploidy] = [uniform_prior(ploidy)] * len(allele_frequencies)
-
     log_likelihoods = []
     posteriors = []
     for sample_depths, ploidy in zip(depths, ploidies):
@@ -488,7 +707,11 @@ def call_marker(
 
     With the ``uniform`` prior there is one pass, and the allele frequencies
     are used only by the contamination term.  With the ``hwe`` prior the
-    passes repeat until the frequencies settle (see ``ModelSettings``).
+    passes repeat until the frequencies settle (see ``ModelSettings``).  With
+    the ``norm`` prior each pass also re-fits the prior to the posteriors
+    (the two steps of an EM iteration), and the passes repeat until neither
+    the frequencies nor any prior probability changes by more than the
+    tolerance.
     """
     if len(depths) != len(ploidies):
         raise ValueError("depths and ploidies must have one entry per sample")
@@ -496,16 +719,33 @@ def call_marker(
     if frequencies is None:
         return MarkerCall(callable=False, allele_frequencies=[], log_likelihoods=[], posteriors=[])
 
+    ploidy_groups = sorted(set(ploidies))
+    priors = _frequency_priors(ploidy_groups, frequencies, settings)
     if settings.prior == PRIOR_UNIFORM:
-        log_likelihoods, posteriors = _marker_pass(depths, ploidies, frequencies, settings)
-        return MarkerCall(True, frequencies, log_likelihoods, posteriors, iterations=1)
+        log_likelihoods, posteriors = _marker_pass(depths, ploidies, frequencies, priors, settings)
+        return MarkerCall(True, frequencies, log_likelihoods, posteriors, iterations=1, priors=priors)
 
+    normal_parameters: Dict[int, List[Tuple[float, float]]] = {}
     iterations = 0
     while True:
         iterations += 1
-        log_likelihoods, posteriors = _marker_pass(depths, ploidies, frequencies, settings)
+        log_likelihoods, posteriors = _marker_pass(depths, ploidies, frequencies, priors, settings)
         new_frequencies = frequencies_from_posteriors(posteriors, ploidies)
         change = sum(abs(new - old) for new, old in zip(new_frequencies, frequencies)) / len(frequencies)
+        used_priors = priors
+        if settings.prior == PRIOR_NORM:
+            priors, normal_parameters = _fitted_normal_priors(
+                posteriors, ploidies, new_frequencies, normal_parameters
+            )
+            largest_prior_change = max(
+                abs(new - old)
+                for ploidy in ploidy_groups
+                for new_prior, old_prior in zip(priors[ploidy], used_priors[ploidy])
+                for new, old in zip(new_prior, old_prior)
+            )
+            change = max(change, largest_prior_change)
+        else:
+            priors = _frequency_priors(ploidy_groups, new_frequencies, settings)
         frequencies = new_frequencies
         if change <= settings.tolerance or iterations >= settings.max_iterations:
             break
@@ -517,6 +757,8 @@ def call_marker(
         iterations=iterations,
         final_change=change,
         converged=change <= settings.tolerance,
+        priors=used_priors,
+        normal_prior_parameters=normal_parameters,
     )
 
 
@@ -1410,6 +1652,12 @@ def model_description(settings: ModelSettings, overdispersion_estimated: bool = 
             f"it assumes {mating} and that each chromosome copy is drawn independently "
             "(polysomic inheritance in polyploids)"
         )
+    elif settings.prior == PRIOR_NORM:
+        prior = (
+            "normal-shaped prior over dosages (updog's norm; Gerard and Ferrao 2020), with a mean and standard "
+            f"deviation fitted per record and ploidy; a ploidy with fewer than {NORMAL_PRIOR_MIN_SAMPLES} samples "
+            "uses Hardy-Weinberg proportions"
+        )
     else:
         prior = "uniform prior over dosages"
     return (
@@ -1592,6 +1840,17 @@ def run_call(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    small_ploidy_groups = sorted(
+        ploidy for ploidy, count in Counter(ploidies).items() if count < NORMAL_PRIOR_MIN_SAMPLES
+    )
+    if args.prior == PRIOR_NORM and small_ploidy_groups:
+        print(
+            f"note: fewer than {NORMAL_PRIOR_MIN_SAMPLES} samples have ploidy "
+            f"{', '.join(str(ploidy) for ploidy in small_ploidy_groups)}; --prior norm uses Hardy-Weinberg "
+            "proportions for them",
+            file=sys.stderr,
+        )
+
     designs = {}
     if args.reference_tags:
         designs = {locus.marker: locus for locus in load_reference_tags(Path(args.reference_tags))}
@@ -1709,6 +1968,7 @@ def run_call(args: argparse.Namespace) -> int:
             "count": len(sample_names),
             "by_ploidy": {str(ploidy): count for ploidy, count in sorted(Counter(ploidies).items())},
             "ploidy_file_samples_not_in_madc": len(samples_not_in_madc),
+            "ploidies_using_hwe_under_norm_prior": small_ploidy_groups if args.prior == PRIOR_NORM else [],
         },
         "markers": {
             "in_madc": len(tasks),
@@ -1806,9 +2066,10 @@ def add_call_command(subparsers) -> None:
         choices=PRIOR_CHOICES,
         default=PRIOR_HWE,
         help=(
-            "genotype prior: uniform (every dosage equally probable) or hwe (Hardy-Weinberg proportions for "
+            "genotype prior: uniform (every dosage equally probable), hwe (Hardy-Weinberg proportions for "
             "allele frequencies estimated from all samples; assumes random mating and polysomic inheritance) "
-            f"(default: {PRIOR_HWE})"
+            "or norm (a normal shape over the dosages fitted per record and ploidy, as in updog; does not "
+            f"assume random mating) (default: {PRIOR_HWE})"
         ),
     )
     calling.add_argument(
@@ -1838,13 +2099,13 @@ def add_call_command(subparsers) -> None:
     calling.add_argument(
         "--tol", type=_positive_float, default=DEFAULT_TOLERANCE,
         help=(
-            "with --prior hwe, stop iterating a record once its allele frequencies change by no more than "
-            f"this on average (default: {DEFAULT_TOLERANCE:g})"
+            "with --prior hwe or norm, stop iterating a record once its allele frequencies (and, with norm, "
+            f"its prior probabilities) change by no more than this (default: {DEFAULT_TOLERANCE:g})"
         ),
     )
     calling.add_argument(
         "--max-iterations", type=positive_int, default=DEFAULT_MAX_ITERATIONS,
-        help=f"with --prior hwe, the most iterations a record may take (default: {DEFAULT_MAX_ITERATIONS})",
+        help=f"with --prior hwe or norm, the most iterations a record may take (default: {DEFAULT_MAX_ITERATIONS})",
     )
     calling.add_argument(
         "--min-dp", type=nonnegative_int, default=DEFAULT_MIN_DEPTH,

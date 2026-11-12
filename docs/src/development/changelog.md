@@ -15,6 +15,10 @@ Notable changes by version. Measurements behind each change are in the
   marginal posterior among the called dosages. Coordinates are marker-local. It uses only the
   standard library. The tests compare its likelihoods, posteriors, converged allele frequencies
   and genotypes with polyRAD 2.0.1 on stored reference values.
+- `call --prior norm` adds updog's `norm` genotype distribution: dosage probabilities with a normal
+  shape, fitted per record and per ploidy, which does not assume random mating. With the same
+  likelihood, its fitted priors and genotypes match updog 2.1.7 on stored reference values. A
+  ploidy with fewer than 10 samples uses Hardy-Weinberg proportions.
 - `call --selfing-rate` adjusts the Hardy-Weinberg prior for self-fertilisation, for inbred lines
   and partly selfing species. Its priors and iterated results match polyRAD's `selfing.rate`.
 - `call` estimates the beta-binomial overdispersion from the read counts by maximum likelihood
