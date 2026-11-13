@@ -188,7 +188,7 @@ them.
 - A table with fewer than 100 sample-by-marker cells with reads is too small to estimate from;
   `call` says so and uses an overdispersion of 9 and a background rate of 0.002.
 - With `--allele-bias fit` the estimate fits the bias too. Without it, biased markers look like
-  scatter and the overdispersion comes out lower (40 and 50 against 100 and 150 on the two alfalfa
+  scatter and the overdispersion comes out lower (30 and 40 against 150 on the two alfalfa
   populations).
 - This is not polyRAD's `TestOverdispersion`, which on simulated tetraploid and hexaploid counts
   chose values well below the true one.
@@ -211,14 +211,29 @@ towards 0 with a normal prior of standard deviation 0.7, starts from updog's fiv
 (0.37 to 2.7) and keeps the fit with the highest log-likelihood after that prior. With the other
 settings equal, the fitted bias and the genotypes match updog's.
 
-- The bias is found by calling the record at a series of bias values, so a record takes about 15
-  times as long to call. On the two alfalfa populations a whole run took 4 to 6 times as long.
+- The bias is found by calling the record at a series of bias values, 17 or more, so calling takes
+  much longer. On 1,000 alfalfa markers and 186 samples a whole run took eight times as long (301 s
+  against 38 s on one worker), which was still 3.7 times as fast as updog.
 - It is applied to the sample's own allele copies, and background reads are added afterwards.
   updog applies its sequencing error first. In this order, samples that do not carry an allele say
   nothing about its bias, which matters because the background rate is one value for the table.
 - The search covers biases from 0.14 to 7.4. A record whose fit ends at either limit is counted in
   the QC JSON and marked in the bias table; such a marker is usually not behaving as one locus.
 - The VCF carries the bias as `INFO/BIAS`, and `PREFIX.bias.csv` lists every fitted record.
+
+When to fit it, from read counts drawn with updog's and polyRAD's own simulators and from two
+tetraploid alfalfa populations (the tables are in the development record):
+
+- Use it with `--prior norm`. With `--prior hwe` it lost accuracy wherever the samples were not in
+  Hardy-Weinberg proportions (families, inbred lines).
+- On biased polyploid data it brought `call` level with updog (within 0.7 points of genotypes
+  correct on seven updog-simulated tables), where calling without it was 8 to 20 points behind. On
+  the alfalfa populations it raised agreement with published dosages from 90% to 92%.
+- On outbred tetraploid data without bias it cost up to 1.5 points.
+- Do not fit it for inbred lines. Without heterozygous samples a bias cannot be told from a shift
+  of every dosage, and 8 points were lost.
+- Check the result in hexaploids with widely scattered counts: on one such simulated table 10
+  points were lost, as updog lost them.
 
 ## Filters
 

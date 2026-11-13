@@ -23,8 +23,9 @@ Notable changes by version. Measurements behind each change are in the
 - `call` estimates a background-read rate (`--background-rate auto`, the default) together with
   the overdispersion: the share of reads that show an allele they did not come from. It replaces
   polyRAD's contamination rate, which is now 0 unless set, because contamination cannot account for
-  stray reads of an allele no other sample carries. The estimate uses the `norm` prior and the
-  worker processes.
+  stray reads of an allele no other sample carries. The estimate gives every dosage its own
+  probability at each marker, so it does not depend on `--prior` and also works for inbred and
+  partly inbred samples, and it uses the worker processes.
 - Two-allele records are computed for one allele and mirrored for the other, and terms shared by
   the samples of a ploidy are computed once. Results are unchanged.
 - `call --prior norm` adds updog's `norm` genotype distribution: dosage probabilities with a normal

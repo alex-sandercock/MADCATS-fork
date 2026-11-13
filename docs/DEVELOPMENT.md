@@ -1570,6 +1570,16 @@ Only the parts needed for this were adapted. polyRAD's population-structure,
 linkage and mapping-population priors, its ploidy tests and its import and
 export code were not.
 
+Two parts of updog 2.1.7's model were added afterwards: the `norm` genotype
+prior and the allelic bias. Three parts are MADCATS's own and have no
+published counterpart: the maximum-likelihood estimate of the overdispersion,
+the table-wide background-read rate estimated with it, and the free-weights
+prior that estimate uses. The paragraphs below are in the order the work was
+done, so the earlier tables were measured before the later parts existed. The
+figures for the finished model are under "Finished model on the alfalfa
+populations", "Tables from updog's and polyRAD's simulators" and "Time and
+memory".
+
 **Differences from polyRAD.**
 
 - Likelihoods are kept as logarithms. polyRAD exponentiates them and sets a
@@ -1659,7 +1669,8 @@ The article publishes the dosages used for its linkage maps. Of its markers,
 974 and 986 are panel targets, and the rest are off-target SNPs. Target calls
 against the published dosages, over 166 and 338 progeny (the published tables
 count Ref copies, and count the other allele at 38 and 43 markers, which were
-re-oriented):
+re-oriented). These rows were measured with a contamination rate of 0.001 and
+no background-read rate, which is how `call` ran at that point:
 
 | Settings | I195 × J432: called / same dosage | E115 × F628: called / same dosage |
 |---|---|---|
@@ -1707,8 +1718,8 @@ the allelic bias updog fitted for each marker:
 updog's per-marker fits had a median bias of 0.99 and 0.98 (10th–90th
 percentile 0.72–1.24 and 0.72–1.30), a median sequencing-error rate of 0.09%
 and 0.24%, and a median overdispersion of 395 and 183 on polyRAD's scale. The
-single values `call` estimates for these tables (40 and 50) are lower because
-they absorb the bias, which `call` does not model.
+single values `call` estimated for these tables (40 and 50) are lower because
+they absorb the bias, which `call` did not model at that point.
 
 On simulated tetraploid tables with known genotypes (100 markers, 150 samples,
 20–60 reads, overdispersion 40, 0.5% read errors; one table per case),
@@ -1729,12 +1740,15 @@ Biased markers had a bias of 2^N(0, 0.5). Three things separate the columns.
 (1) Read errors above the contamination rate pull the overdispersion estimate
 down: with a true value of 40 it was 30, 16, 12 and 8 at error rates of 0.1%,
 0.3%, 0.5% and 1%, and 40–50 throughout once the contamination rate was 0.01.
-(2) The estimate assumes Hardy-Weinberg proportions and fails on the
-two-subpopulation table (7) and on inbred lines (falls back to 9). (3) With
+(2) The estimate assumed Hardy-Weinberg proportions and failed on the
+two-subpopulation table (7) and on inbred lines (fell back to 9). (3) With
 the right overdispersion and stray-read rate, `call` matches or beats updog on
 unbiased markers and trails it by 2–4 points on biased ones. A prototype of a
 normal-shaped prior in the `call` engine (not in the repository) changed these
-figures by at most 1.5 points.
+figures by at most 1.5 points. The background-read rate, the free-weights
+estimate and the allelic bias, all described below, answer these three points
+in turn; the same eight tables are called again with the finished model under
+"Tables from updog's and polyRAD's simulators".
 
 **The norm prior (`--prior norm`).** updog's `norm` genotype distribution was
 added as a prior: dosage probabilities proportional to a normal density, with
@@ -1760,16 +1774,238 @@ than 10 samples uses Hardy-Weinberg proportions. On the two alfalfa F1
 populations the norm prior agreed with the published dosages as often as HWE
 did (90.38% against 90.80%, and 89.78% against 89.93%, unfiltered) and took
 about 35% longer (29 s against 22 s, and 37 s against 27 s, for all 3,000
-markers on four workers). The overdispersion estimate still assumes
-Hardy-Weinberg proportions.
+markers on four workers).
 
 The processed layout of these files has a `readCountSum` column before the
 samples, which `call` skips.
 
-**Contamination as the only error allowance.** With the default contamination
-rate of 0.001, a diploid with 10 Ref reads and 1 Alt read is called
-heterozygous: a read of an allele the sample does not carry can only come from
-contamination. This is polyRAD's behaviour.
+**Background-read rate (`--background-rate`).** In polyRAD a read of an allele
+the sample does not carry can only come from contamination, at the allele's
+frequency among the other samples. That cannot account for stray reads of an
+allele that is rare in the table, and read errors beyond the contamination
+rate were taken for scatter and pulled the overdispersion estimate down (point
+1 above). `call` therefore has updog's sequencing-error term, under the name
+background-read rate: a read shows the other allele with probability *e*, so
+an expected fraction *f* becomes *f*(1 − *e*) + (1 − *f*)*e*. It is one value
+for the table, where updog fits one per marker, and the default contamination
+rate became 0. With polyRAD's settings a diploid with 10 Ref reads and 1 Alt
+read is called heterozygous (posterior 0.95 in a table of 21 samples); with a
+background rate of 0.002 and an overdispersion of 40 the same sample is
+homozygous with a posterior of 0.69.
+
+The rate is estimated together with the overdispersion
+(`estimate_read_model`). For a given rate the overdispersion is the
+maximum-likelihood value on its grid, and the rate kept is the one at which
+the counts are most probable, found by starting at 0.002 and moving to a
+neighbouring rate (eight values from 0.0002 to 0.02) for as long as that
+raises the likelihood. The two can be told apart because they show in
+different samples: stray reads in samples that do not carry an allele, scatter
+in samples that carry both.
+
+On the alfalfa populations the estimate is a background rate of 0.003 with an
+overdispersion of 30 (I195 × J432) and 40 (E115 × F628). With the bias fitted
+it is 0.0005 with 150, and 0.001 with 150, nearer updog's per-marker medians
+for the same tables (0.09% and 0.24%; 395 and 183).
+
+**Free weights for the estimate.** The estimate sums the genotypes out, so it
+needs genotype proportions for each marker. With Hardy-Weinberg proportions it
+failed on two subpopulations and on inbred lines (point 2 above). With the
+`norm` shape, which cannot describe an excess of both homozygotes, it still
+failed on inbred and partly inbred tables. The estimate now gives every dosage
+its own probability at each marker (`PRIOR_FREE`: the summed posteriors,
+normalised), whatever `--prior` the run uses. Estimates without bias fitting,
+as overdispersion and background rate, on eight of the simulated tables
+described under "Tables from updog's and polyRAD's simulators":
+
+| Table | Simulated | `norm` shape | Free weights |
+|---|---|---|---|
+| polyRAD 4x, inbreeding 0.5 | 20; 0.001 contamination and 0.001 errors | 2 (fails), 0.0002 | 20, 0.001 |
+| polyRAD 4x outbred | same | 20, 0.001 | 20, 0.001 |
+| polyRAD 6x outbred | same | 20, 0.001 | 20, 0.001 |
+| updog 4x random mating, biased | 49–499, 0.005 | 25, 0.01 | 25, 0.01 |
+| updog 4x F1, biased | 49–499, 0.005 | 30, 0.01 | 30, 0.01 |
+| Two subpopulations | 40, 0.005 | 40, 0.005 | 40, 0.005 |
+| Inbred lines | 40, 0.005 | 2 (fails), 0.0002 | 40, 0.005 |
+| F1, biased | 40, 0.005 | 30, 0.005 | 30, 0.005 |
+
+Free weights give the same values as the `norm` shape where that worked, and
+the simulated values on both tables where it failed. On biased tables both
+read low unless the bias is fitted, when both gave 100 and 0.005 on the two
+updog tables. The inbred table is estimable because its homozygotes carry
+stray reads; a table with neither heterozygotes nor stray reads still ends at
+the lowest overdispersion tried, and `call` then warns and uses 9.
+
+**Allelic bias (`--allele-bias fit`).** The comparison with updog put the gap
+at markers where a copy of one allele yields more reads than a copy of the
+other (point 3 above). updog's bias was added for records with two alleles:
+with bias *h*, an expected reference fraction *f* becomes
+*f* / (*h*(1 − *f*) + *f*). As in updog, the log of the bias has a normal
+prior (mean 0, standard deviation 0.7), the search starts from five values
+(exp(−1) to exp(1)), and the fit with the highest log-likelihood after that
+prior is kept. Two things differ from updog:
+
+- The bias is applied to the sample's own allele copies, and background reads
+  are added afterwards. updog applies its sequencing error first. In updog's
+  order, samples that do not carry an allele inform its bias through their
+  stray reads; with one background rate for the whole table that would turn
+  markers with more or fewer stray reads than average into biased ones.
+- The search is over the bias alone. Each trial value is a complete fit of the
+  record at that bias, scored by its log-likelihood with the genotypes summed
+  out. The five starting values are fitted from scratch, and every one that
+  scores at least as high as its neighbours is refined by a golden-section
+  search within half a log unit of it, to 0.01 in the log of the bias. updog
+  optimises bias, sequencing error and overdispersion together from each
+  start. The range searched is exp(−2) to exp(2), 0.14 to 7.4.
+
+`tests/fixtures/updog_norm.json` holds ten updog fits with the bias estimated
+and the other parameters fixed: five simulated markers (tetraploids simulated
+with a bias of 0.6, 1.9 and 1; a diploid with 0.5; a hexaploid family with
+1.5), each under updog's `norm` and `hw` models. The fitted biases agree to
+0.07%, the priors to 1e-4 and the posteriors to 1e-3, and all 1,140 genotypes
+are the same. For the hexaploid family both tools fit a bias of 2.1 (`norm`)
+and 2.7 (`hw`) where 1.5 was simulated: with few dosage classes a bias and a
+shift of every dosage explain the counts about equally well.
+
+The first version of the search refined only the best starting value. On
+updog-simulated F1 markers with one or two dosage classes it then kept the
+wrong one (90.7% of genotypes correct against updog's 94.0%); refining every
+start that scores at least as high as its neighbours gave 93.3%.
+
+Haplotype records and sites with three or more bases are called without a
+bias: updog's bias is defined for two alleles, and a bias per allele of a
+multi-allele record has not been worked out or tested.
+
+**Finished model on the alfalfa populations.** Target calls against the
+published dosages, without filters, with the estimates above:
+
+| Settings | I195 × J432: same dosage | E115 × F628: same dosage |
+|---|---|---|
+| polyRAD's settings (overdispersion 9, contamination 0.001) | 88.81% | 86.33% |
+| `--prior hwe` (the defaults) | 90.87% | 90.04% |
+| `--prior norm` | 90.11% | 89.80% |
+| `--prior hwe --allele-bias fit` | 92.17% | 91.79% |
+| `--prior norm --allele-bias fit` | 92.26% | 91.94% |
+| updog 2.1.7, `norm` | 92.98% | 92.68% |
+
+In the four rows of the finished model 98.3–98.7% of calls are within one copy
+of the published dosage. The published dosages probably come from updog
+(above), so the last row is partly a comparison of updog with itself. With
+`--prior norm`, of the 2,966 and 2,972 target records fitted, 38% and 40%
+have a bias outside 0.8–1.25 and 26% and 27% outside 0.67–1.5 (median 1.0),
+and 3% end at a limit of the search.
+
+**Tables from updog's and polyRAD's simulators.** To have truth that does not
+come from MADCATS code, read counts were also drawn with the simulators the
+two packages ship (`rgeno` and `rflexdog` in updog; `SimGenotypes` and
+`SimAlleleDepth` in polyRAD), 150 markers by 150 samples per table, with
+negative-binomial depths of mean 150, or 25 where the table is marked low
+depth. updog's tables have a sequencing-error rate of 0.5%, an overdispersion
+of 49–499 on polyRAD's scale drawn per marker and, where marked biased, a bias
+of exp(N(0, 0.5)) per marker. polyRAD's have an overdispersion of 20, a
+contamination rate of 0.001 and an error rate of 0.001. The first eight rows
+are the tetraploid tables of the earlier comparison (100 markers, 150 samples,
+20–60 reads, overdispersion 40, 0.5% read errors, bias 2^N(0, 0.5) where
+marked). Share of genotypes whose most probable dosage is the true one,
+without filters; polyRAD is `IterateHWE` with its defaults:
+
+| Table | polyRAD | updog `norm` | `call` hwe | `call` norm | hwe + bias | norm + bias |
+|---|---|---|---|---|---|---|
+| 4x random mating | – | 87.5% | 89.5% | 89.5% | 89.1% | 88.9% |
+| 4x F1 | – | 88.7% | 89.5% | 90.7% | 85.6% | 89.9% |
+| 4x two subpopulations | – | 88.8% | 89.8% | 90.2% | 87.2% | 88.7% |
+| 4x inbred lines | – | 83.4% | 97.4% | 98.6% | 71.7% | 90.3% |
+| 4x random mating, biased | – | 86.0% | 81.8% | 81.3% | 87.4% | 87.4% |
+| 4x F1, biased | – | 86.9% | 85.5% | 85.2% | 85.9% | 88.9% |
+| 4x two subpopulations, biased | – | 89.0% | 85.4% | 85.4% | 88.7% | 89.6% |
+| 4x inbred lines, biased | – | 84.9% | 97.3% | 98.4% | 72.8% | 89.8% |
+| updog 4x random mating | 84.3% | 96.7% | 96.8% | 96.7% | 96.7% | 96.7% |
+| updog 4x random mating, biased | 72.3% | 96.3% | 82.3% | 81.5% | 96.2% | 96.2% |
+| updog 4x F1, biased | 76.1% | 94.0% | 81.6% | 81.1% | 87.6% | 93.3% |
+| updog 4x `norm` genotypes, biased | 74.6% | 95.9% | 84.2% | 83.6% | 95.8% | 95.9% |
+| updog 2x random mating, biased | 99.5% | 100.0% | 99.6% | 99.6% | 100.0% | 100.0% |
+| updog 6x random mating, biased | 58.3% | 86.4% | 67.3% | 66.6% | 86.5% | 86.3% |
+| updog 4x random mating, biased, low depth | 74.5% | 84.1% | 76.3% | 75.6% | 84.6% | 84.4% |
+| polyRAD 4x outbred | 87.0% | 87.3% | 89.0% | 88.8% | 88.5% | 88.5% |
+| polyRAD 4x, inbreeding 0.5 | 88.7% | 93.6% | 93.2% | 93.9% | 90.7% | 93.1% |
+| polyRAD 2x outbred | 99.7% | 99.9% | 99.9% | 99.9% | 99.9% | 99.9% |
+| polyRAD 6x outbred | 73.1% | 65.7% | 75.3% | 75.2% | 71.7% | 65.3% |
+| polyRAD 4x outbred, low depth | 81.5% | 79.2% | 82.4% | 82.4% | 81.8% | 81.7% |
+
+`call` leaves a sample without reads uncalled and the other two call it from
+the prior; such samples are 0.1% of the low-depth tables and are not counted
+for `call`. What the table shows:
+
+- Without bias in the data, `call` without bias fitting is within half a point
+  of updog or ahead of it on every table: ahead by 0 to 3 points on outbred
+  tetraploids, 10 on the polyRAD hexaploid and 14 to 15 on inbred lines. On
+  polyRAD's partly inbred table `hwe` is 0.4 behind and `norm` 0.3 ahead.
+- With bias in the data, `--prior norm --allele-bias fit` is within 0.7 points
+  of updog on all seven of updog's tables and ahead of it on the four biased
+  tables of the first group. Without bias fitting `call` is 8 to 20 points
+  behind updog on updog's biased polyploid tables.
+- Fitting a bias that is not there costs 0 to 1.5 points on outbred
+  tetraploids with `--prior norm`. Fitting one costs 8 points on inbred lines,
+  whether or not the data are biased, and 10 on the polyRAD hexaploid. updog,
+  which always fits a bias, is at 83–85% and 66% on those tables. Without
+  heterozygotes, or with seven dosage classes of scattered counts, a bias and
+  a shift of the dosages are hard to tell apart.
+- `--prior hwe --allele-bias fit` fails where the samples are not in
+  Hardy-Weinberg proportions: 72–73% on inbred lines, and 86–88% on the three
+  F1 tables against 89–93% with `norm`. The bias needs a prior that can follow
+  the genotype proportions.
+- polyRAD with its default overdispersion of 9 is 2 to 12.5 points below
+  `call` hwe, the same model with estimated values, on updog's polyploid
+  tables, whose scatter is far smaller than 9 allows. On polyRAD's own tables,
+  simulated with 20, it is 0 to 4.5 points below.
+- With no bias fitted, the mean probability `call` gives its called dosage is
+  within 1.5 points of its accuracy on every table without bias in the data.
+  With `--prior norm --allele-bias fit` it is within 3 points on the outbred
+  tetraploid tables, apart from updog's F1 table (4 above). updog's is 4.5 to
+  8 points above its accuracy on the outbred tetraploid tables that are not
+  its own and 0 to 4 above on its own, 21 above on the polyRAD hexaploid and
+  22 below on inbred lines.
+- With the bias fitted, the overdispersion estimate was one grid step high on
+  several unbiased tables (50 for a simulated 40, 25 for 20), and wrong on the
+  polyRAD hexaploid: 10 with a background rate of 0.0002, where 20 and 0.001
+  were simulated and the estimate without bias gave 20 and 0.001.
+
+**Time and memory.** One table was called by all three tools: the first 1,000
+markers of I195 × J432 (186 tetraploid samples, 2,486 MADC rows), target
+records, default filters, on a four-core Intel Xeon at 2.1 GHz with 15 GB of
+memory. Each command ran in its own session, and every process in that session
+was sampled ten times a second: wall time, the CPU time of all its processes
+together, and the peak of their summed proportional memory, which counts a
+page shared by several processes once. polyRAD is `IterateHWE` with an
+overdispersion of 9 followed by `GetProbableGenotypes`, and updog is
+`multidog` with `model = "norm"`; both read the reference and alternate counts
+`call` derives from the MADC rows. `IterateHWE` has no option to use more than
+one core.
+
+| Tool and settings | Cores | Wall | CPU | Peak memory |
+|---|---|---|---|---|
+| polyRAD 2.0.1, `IterateHWE` | 1 | 5 s | 5 s | 284 MB |
+| `call` with polyRAD's settings (nothing estimated) | 1 | 7 s | 7 s | 57 MB |
+| `call --prior hwe` (the defaults) | 1 | 33 s | 33 s | 57 MB |
+| `call --prior hwe` | 4 | 10 s | 34 s | 161 MB |
+| `call --prior norm` | 1 | 38 s | 38 s | 57 MB |
+| `call --prior norm` | 4 | 10 s | 38 s | 160 MB |
+| `call --prior hwe --allele-bias fit` | 4 | 72 s | 267 s | 182 MB |
+| `call --prior norm --allele-bias fit` | 1 | 301 s | 299 s | 63 MB |
+| `call --prior norm --allele-bias fit` | 4 | 80 s | 299 s | 182 MB |
+| updog 2.1.7, `norm` | 1 | 1,115 s | 1,108 s | 281 MB |
+| updog 2.1.7, `norm` | 4 | 325 s | 1,128 s | 765 MB |
+
+- With polyRAD's settings `call` takes 7 s where polyRAD takes 5 s, in a fifth
+  of the memory. Most of the other 26 s of a default run is the estimate of
+  the overdispersion and the background-read rate, which works on at most
+  20,000 sample-by-marker cells however large the table is.
+- The `norm` prior adds 5 s to the `hwe` run.
+- Fitting the bias multiplies the time by eight. It is still 3.7 times as fast
+  as updog on one core and 4 times on four, with the accuracy shown above.
+- Without the bias, `call --prior norm` is 29 times as fast as updog on one
+  core and 32 times on four.
+- Four workers give 3.5 to 3.8 times the speed of one. Memory with four
+  workers is that of five Python processes, 160–180 MB.
 
 **Other checks.** On the bundled example all 96 target and 96 haplotype
 genotypes equal the simulated truth. `bcftools view` reads the three VCF types
