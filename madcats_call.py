@@ -218,7 +218,10 @@ class MarkerCall:
     differ from the final ones by ``final_change`` on average.
 
     ``priors`` holds the prior the posteriors were computed with, as
-    ``[ploidy][allele][dosage]``.  With the ``norm`` prior,
+    ``[group][allele][dosage]``, and ``prior_groups`` each sample's group:
+    its ploidy, since samples of a ploidy share a prior, or under the
+    ``structure`` prior with neighbours the sample's own index.  With the
+    ``norm`` prior,
     ``normal_prior_parameters`` holds the last fitted
     ``(mean, standard deviation)`` as ``[ploidy][allele]``, for the ploidy
     groups large enough to be fitted.  ``allele_biases`` holds each allele's
@@ -227,8 +230,7 @@ class MarkerCall:
 
     With the ``structure`` prior and neighbours, ``sample_frequencies`` holds
     the allele frequencies each sample's own prior was computed at, as
-    ``[sample][allele]``, and ``priors`` the Hardy-Weinberg prior of the
-    passes before the neighbours were used.
+    ``[sample][allele]``.
 
     ``callable`` is False when no sample has a read at the marker: there is
     then no allele frequency to start from, and the other fields are empty.
@@ -242,6 +244,7 @@ class MarkerCall:
     final_change: Optional[float] = None
     converged: bool = True
     priors: Dict[int, List[List[float]]] = dataclasses.field(default_factory=dict)
+    prior_groups: List[int] = dataclasses.field(default_factory=list)
     normal_prior_parameters: Dict[int, List[Tuple[float, float]]] = dataclasses.field(default_factory=dict)
     allele_biases: List[float] = dataclasses.field(default_factory=list)
     bias_fit: Optional["BiasFit"] = None
@@ -748,14 +751,21 @@ def depth_ratio_frequencies(depths: Sequence[Sequence[int]]) -> Optional[List[fl
     return [total / samples_with_reads for total in share_totals]
 
 
+# With the structure prior, the record's allele frequency over all samples counts as this
+# many extra neighbours of every sample.  It keeps a sample's frequency off 0 and 1 when
+# all its neighbours agree.
+NEIGHBOUR_TABLE_WEIGHT = 1.0
+
+
 def _frequency_priors(
     ploidy_groups: Sequence[int], allele_frequencies: Sequence[float], settings: ModelSettings
 ) -> Dict[int, List[List[float]]]:
     """Priors that follow from the allele frequencies alone, as ``[ploidy][allele][dosage]``.
 
-    Uniform for the ``uniform`` prior and Hardy-Weinberg proportions
-    otherwise.  The fitted priors start from the latter (``_fitted_priors``).
-    Samples of the same ploidy share a prior.
+    Uniform for the ``uniform`` prior and Hardy-Weinberg proportions for
+    every other prior: ``hwe`` uses them throughout, the fitted priors start
+    from them (``_fitted_priors``), and ``structure`` uses them until the
+    neighbours take over.  Samples of the same ploidy share a prior.
     """
     if settings.prior == PRIOR_UNIFORM:
         return {ploidy: [uniform_prior(ploidy)] * len(allele_frequencies) for ploidy in ploidy_groups}
@@ -770,7 +780,7 @@ def _fitted_priors(
     ploidies: Sequence[int],
     allele_frequencies: Sequence[float],
     previous_parameters: Dict[int, List[Tuple[float, float]]],
-    free: bool = False,
+    free: bool,
 ) -> Tuple[Dict[int, List[List[float]]], Dict[int, List[Tuple[float, float]]]]:
     """Priors fitted to the current posteriors, one per ploidy group and allele.
 
@@ -816,6 +826,49 @@ def _fitted_priors(
     return priors, parameters
 
 
+def _neighbourhood_frequencies(
+    posteriors: Sequence[Sequence[Sequence[float]]],
+    ploidies: Sequence[int],
+    record_frequencies: Sequence[float],
+    neighbours: Sequence[Sequence[int]],
+) -> List[List[float]]:
+    """Each sample's allele frequencies among its neighbours, as ``[allele][sample]``.
+
+    A sample's frequency of an allele is the mean share of chromosome copies
+    expected to carry it among the sample's neighbours, with the record's
+    frequency over all samples counted as ``NEIGHBOUR_TABLE_WEIGHT`` more
+    neighbours.  A sample is not among its own neighbours, so its own reads
+    do not enter its own frequency.
+    """
+    frequencies = []
+    for allele, record_frequency in enumerate(record_frequencies):
+        shares = [
+            posterior_mean_dosage(sample_posteriors[allele]) / ploidy
+            for sample_posteriors, ploidy in zip(posteriors, ploidies)
+        ]
+        frequencies.append(
+            [
+                (sum(map(shares.__getitem__, sample_neighbours)) + NEIGHBOUR_TABLE_WEIGHT * record_frequency)
+                / (len(sample_neighbours) + NEIGHBOUR_TABLE_WEIGHT)
+                for sample_neighbours in neighbours
+            ]
+        )
+    return frequencies
+
+
+def _neighbour_priors(sample_frequencies: Sequence[Sequence[float]], ploidies: Sequence[int]) -> Dict[int, List[List[float]]]:
+    """Hardy-Weinberg priors at each sample's own allele frequencies, as ``[sample][allele][dosage]``.
+
+    This is the form of polyRAD's population-structure prior
+    (``AddGenotypePriorProb_ByTaxa``); where the frequencies come from is
+    different (``find_neighbours``).
+    """
+    return {
+        sample: [hwe_prior(ploidy, of_allele[sample]) for of_allele in sample_frequencies]
+        for sample, ploidy in enumerate(ploidies)
+    }
+
+
 def _log_likelihoods_of_samples(
     depths: Sequence[Sequence[int]],
     marker_depths: Sequence[int],
@@ -853,37 +906,26 @@ def _log_likelihoods_of_samples(
     ]
 
 
-def _marker_pass(
-    depths: Sequence[Sequence[int]],
-    marker_depths: Sequence[int],
-    count_constants: Sequence[Sequence[float]],
-    ploidies: Sequence[int],
-    allele_frequencies: Sequence[float],
+def _posteriors_of_samples(
+    log_likelihoods: Sequence[Sequence[Sequence[float]]],
     priors: Dict[int, List[List[float]]],
-    settings: ModelSettings,
-    biases: Sequence[float],
-    log_likelihoods: Optional[List[List[List[float]]]] = None,
-) -> Tuple[List[List[List[float]]], List[List[List[float]]]]:
-    """Likelihoods and posteriors of every sample and allele for given allele frequencies and priors.
+    prior_groups: Sequence[int],
+) -> List[List[List[float]]]:
+    """Posterior of every dosage for every sample and allele, as ``[sample][allele][dosage]``.
 
-    The arguments are those of ``_log_likelihoods_of_samples``, with the
-    priors as ``[ploidy][allele][dosage]``.  ``log_likelihoods`` can be given
-    when they are already known for these frequencies.
+    ``priors`` is ``[group][allele][dosage]`` and ``prior_groups`` names each
+    sample's group: its ploidy when samples of a ploidy share a prior, or the
+    sample itself under the ``structure`` prior.
     """
-    if log_likelihoods is None:
-        log_likelihoods = _log_likelihoods_of_samples(
-            depths, marker_depths, count_constants, ploidies, allele_frequencies, settings, biases
-        )
-    # Samples of the same ploidy share the prior's logs.
-    log_priors = {ploidy: [log_probabilities(prior) for prior in priors[ploidy]] for ploidy in priors}
-    posteriors = [
+    # The samples of a group share the prior's logs.
+    log_priors = {group: [log_probabilities(prior) for prior in group_priors] for group, group_priors in priors.items()}
+    return [
         [
-            dosage_posterior(allele_log_likelihoods, priors[ploidy][allele], log_priors[ploidy][allele])
+            dosage_posterior(allele_log_likelihoods, priors[group][allele], log_priors[group][allele])
             for allele, allele_log_likelihoods in enumerate(sample_log_likelihoods)
         ]
-        for sample_log_likelihoods, ploidy in zip(log_likelihoods, ploidies)
+        for sample_log_likelihoods, group in zip(log_likelihoods, prior_groups)
     ]
-    return log_likelihoods, posteriors
 
 
 def frequencies_from_posteriors(
@@ -913,65 +955,92 @@ def _iterate_marker(
     frequencies: Sequence[float],
     biases: Sequence[float],
     warm_start: Optional[MarkerCall] = None,
+    neighbours: Optional[Sequence[Sequence[int]]] = None,
 ) -> MarkerCall:
     """Run the passes of ``call_marker`` for the alleles in ``depths`` with fixed biases.
 
-    ``warm_start`` is an earlier result for the same alleles, usually at a
-    nearby bias; its allele frequencies and priors replace ``frequencies``
-    and the priors that follow from them, so that fewer passes are needed.
+    Each pass computes the posteriors from the current priors, re-estimates
+    the allele frequencies from them, and renews the priors: from the new
+    frequencies (``hwe``), by a fit to the posteriors (``norm`` and the
+    estimate's free weights), or, when ``neighbours`` is given, from each
+    sample's neighbours.  The passes stop when the quantity the priors follow
+    from has settled: the record's allele frequencies, for the fitted priors
+    also every prior probability, and with neighbours the samples' own
+    frequencies.
+
+    ``warm_start`` is an earlier result for the same alleles.  Without
+    neighbours it is usually the result at a nearby bias, and its allele
+    frequencies and priors replace ``frequencies`` and the priors that follow
+    from them, so that fewer passes are needed.  With neighbours it is the
+    record called with shared priors, which the samples' first frequencies
+    are taken from.
     """
-    ploidy_groups = sorted(set(ploidies))
+    sample_count = len(ploidies)
     normal_parameters: Dict[int, List[Tuple[float, float]]] = {}
-    if warm_start is None:
-        frequencies = list(frequencies)
-        priors = _frequency_priors(ploidy_groups, frequencies, settings)
-    else:
+    sample_frequencies: List[List[float]] = []
+    if neighbours is not None:
+        # One prior per sample.
+        prior_groups = list(range(sample_count))
         frequencies = list(warm_start.allele_frequencies)
-        priors = warm_start.priors
-        normal_parameters = warm_start.normal_prior_parameters
+        sample_frequencies = _neighbourhood_frequencies(warm_start.posteriors, ploidies, frequencies, neighbours)
+        priors = _neighbour_priors(sample_frequencies, ploidies)
+    else:
+        # One prior per ploidy.
+        prior_groups = list(ploidies)
+        if warm_start is None:
+            frequencies = list(frequencies)
+            priors = _frequency_priors(sorted(set(ploidies)), frequencies, settings)
+        else:
+            frequencies = list(warm_start.allele_frequencies)
+            priors = warm_start.priors
+            normal_parameters = warm_start.normal_prior_parameters
 
     # Only the contamination term makes the likelihood depend on the allele frequencies.
     # Without it the likelihoods are the same in every pass and are computed once.
-    unchanging_log_likelihoods = None
-    if settings.contamination_rate == 0:
-        unchanging_log_likelihoods = _log_likelihoods_of_samples(
-            depths, marker_depths, count_constants, ploidies, frequencies, settings, biases
-        )
-
-    def one_pass():
-        return _marker_pass(
-            depths, marker_depths, count_constants, ploidies, frequencies, priors, settings, biases,
-            unchanging_log_likelihoods,
-        )
-
+    likelihoods_change = settings.contamination_rate > 0
+    log_likelihoods = _log_likelihoods_of_samples(
+        depths, marker_depths, count_constants, ploidies, frequencies, settings, biases
+    )
     if settings.prior == PRIOR_UNIFORM:
-        log_likelihoods, posteriors = one_pass()
+        posteriors = _posteriors_of_samples(log_likelihoods, priors, prior_groups)
         return MarkerCall(
-            True, frequencies, log_likelihoods, posteriors, iterations=1, priors=priors, allele_biases=list(biases)
+            True, frequencies, log_likelihoods, posteriors, iterations=1, priors=priors, prior_groups=prior_groups,
+            allele_biases=list(biases),
         )
 
-    iterations = 0
-    while True:
-        iterations += 1
-        log_likelihoods, posteriors = one_pass()
+    for iterations in range(1, settings.max_iterations + 1):
+        if likelihoods_change and iterations > 1:
+            log_likelihoods = _log_likelihoods_of_samples(
+                depths, marker_depths, count_constants, ploidies, frequencies, settings, biases
+            )
+        posteriors = _posteriors_of_samples(log_likelihoods, priors, prior_groups)
         new_frequencies = frequencies_from_posteriors(posteriors, ploidies)
-        change = sum(abs(new - old) for new, old in zip(new_frequencies, frequencies)) / len(frequencies)
-        used_priors = priors
-        if settings.prior in (PRIOR_NORM, PRIOR_FREE):
-            priors, normal_parameters = _fitted_priors(
-                posteriors, ploidies, new_frequencies, normal_parameters, free=settings.prior == PRIOR_FREE
-            )
-            largest_prior_change = max(
+        used_priors, used_sample_frequencies = priors, sample_frequencies
+        if neighbours is not None:
+            sample_frequencies = _neighbourhood_frequencies(posteriors, ploidies, new_frequencies, neighbours)
+            priors = _neighbour_priors(sample_frequencies, ploidies)
+            change = sum(
                 abs(new - old)
-                for ploidy in ploidy_groups
-                for new_prior, old_prior in zip(priors[ploidy], used_priors[ploidy])
-                for new, old in zip(new_prior, old_prior)
-            )
-            change = max(change, largest_prior_change)
+                for new_allele, old_allele in zip(sample_frequencies, used_sample_frequencies)
+                for new, old in zip(new_allele, old_allele)
+            ) / (len(new_frequencies) * sample_count)
         else:
-            priors = _frequency_priors(ploidy_groups, new_frequencies, settings)
+            change = sum(abs(new - old) for new, old in zip(new_frequencies, frequencies)) / len(frequencies)
+            if settings.prior in (PRIOR_NORM, PRIOR_FREE):
+                priors, normal_parameters = _fitted_priors(
+                    posteriors, ploidies, new_frequencies, normal_parameters, free=settings.prior == PRIOR_FREE
+                )
+                largest_prior_change = max(
+                    abs(new - old)
+                    for ploidy in priors
+                    for new_prior, old_prior in zip(priors[ploidy], used_priors[ploidy])
+                    for new, old in zip(new_prior, old_prior)
+                )
+                change = max(change, largest_prior_change)
+            else:
+                priors = _frequency_priors(sorted(priors), new_frequencies, settings)
         frequencies = new_frequencies
-        if change <= settings.tolerance or iterations >= settings.max_iterations:
+        if change <= settings.tolerance:
             break
     return MarkerCall(
         True,
@@ -982,107 +1051,11 @@ def _iterate_marker(
         final_change=change,
         converged=change <= settings.tolerance,
         priors=used_priors,
+        prior_groups=prior_groups,
         normal_prior_parameters=normal_parameters,
         allele_biases=list(biases),
-    )
-
-
-# With the structure prior, the record's allele frequency over all samples counts as this
-# many extra neighbours of every sample.  It keeps a sample's frequency off 0 and 1 when
-# all its neighbours agree, and is what a sample without neighbours gets.
-NEIGHBOUR_TABLE_WEIGHT = 1.0
-
-
-def _neighbour_passes(
-    depths: Sequence[Sequence[int]],
-    marker_depths: Sequence[int],
-    count_constants: Sequence[Sequence[float]],
-    ploidies: Sequence[int],
-    settings: ModelSettings,
-    start: MarkerCall,
-) -> MarkerCall:
-    """Continue a Hardy-Weinberg result with each sample's prior taken from its neighbours.
-
-    ``start`` is the record called with the ``hwe`` prior.  From there, a
-    sample's frequency of an allele is the mean share of chromosome copies
-    expected to carry it among the sample's neighbours
-    (``settings.neighbours``), with the record's frequency counted as
-    ``NEIGHBOUR_TABLE_WEIGHT`` more neighbours, and the sample's prior is
-    Hardy-Weinberg at that frequency.  A sample is not among its own
-    neighbours, so its own reads do not enter its own prior.  The passes
-    repeat until the samples' frequencies settle, under the same tolerance
-    and limit as the ``hwe`` passes.
-    """
-    neighbours = settings.neighbours
-    allele_count = len(start.allele_frequencies)
-    biases = start.allele_biases
-    weights = [len(sample_neighbours) + NEIGHBOUR_TABLE_WEIGHT for sample_neighbours in neighbours]
-
-    def expected_shares(posteriors: Sequence[Sequence[Sequence[float]]]) -> List[List[float]]:
-        """Each sample's expected share of copies carrying each allele, as ``[allele][sample]``."""
-        return [
-            [
-                posterior_mean_dosage(sample_posteriors[allele]) / ploidy
-                for sample_posteriors, ploidy in zip(posteriors, ploidies)
-            ]
-            for allele in range(allele_count)
-        ]
-
-    def neighbourhood_frequencies(
-        shares: Sequence[Sequence[float]], table_frequencies: Sequence[float]
-    ) -> List[List[float]]:
-        """Each sample's allele frequencies among its neighbours, as ``[allele][sample]``."""
-        return [
-            [
-                (sum(map(allele_shares.__getitem__, sample_neighbours)) + NEIGHBOUR_TABLE_WEIGHT * table_frequency)
-                / weight
-                for sample_neighbours, weight in zip(neighbours, weights)
-            ]
-            for allele_shares, table_frequency in zip(shares, table_frequencies)
-        ]
-
-    table_frequencies = list(start.allele_frequencies)
-    log_likelihoods = start.log_likelihoods
-    sample_frequencies = neighbourhood_frequencies(expected_shares(start.posteriors), table_frequencies)
-    passes = 0
-    while True:
-        passes += 1
-        if settings.contamination_rate > 0:
-            # Only the contamination term makes the likelihood depend on the record's frequencies.
-            log_likelihoods = _log_likelihoods_of_samples(
-                depths, marker_depths, count_constants, ploidies, table_frequencies, settings, biases
-            )
-        posteriors = [
-            [
-                dosage_posterior(
-                    sample_log_likelihoods[allele],
-                    hwe_prior(ploidy, sample_frequencies[allele][sample], settings.selfing_rate),
-                )
-                for allele in range(allele_count)
-            ]
-            for sample, (sample_log_likelihoods, ploidy) in enumerate(zip(log_likelihoods, ploidies))
-        ]
-        table_frequencies = frequencies_from_posteriors(posteriors, ploidies)
-        used_frequencies = sample_frequencies
-        sample_frequencies = neighbourhood_frequencies(expected_shares(posteriors), table_frequencies)
-        change = sum(
-            abs(new - old)
-            for new_allele, old_allele in zip(sample_frequencies, used_frequencies)
-            for new, old in zip(new_allele, old_allele)
-        ) / (allele_count * len(ploidies))
-        if change <= settings.tolerance or passes >= settings.max_iterations:
-            break
-    return MarkerCall(
-        True,
-        table_frequencies,
-        log_likelihoods,
-        posteriors,
-        iterations=start.iterations + passes,
-        final_change=change,
-        converged=start.converged and change <= settings.tolerance,
-        priors=start.priors,
-        allele_biases=list(biases),
-        sample_frequencies=[list(of_sample) for of_sample in zip(*used_frequencies)],
+        # As [sample][allele], the frequencies the posteriors were computed at.
+        sample_frequencies=[list(of_sample) for of_sample in zip(*used_sample_frequencies)],
     )
 
 
@@ -1117,23 +1090,24 @@ class BiasFit(NamedTuple):
 def marginal_log_likelihood(
     log_likelihoods: Sequence[Sequence[Sequence[float]]],
     priors: Dict[int, List[List[float]]],
-    ploidies: Sequence[int],
+    prior_groups: Sequence[int],
     allele: int = 0,
 ) -> float:
     """Log-likelihood of the read counts of one allele, with the genotypes summed out.
 
     A sample's genotype is unknown, so the probability of its counts is the
     average over the dosages, weighted by their prior probabilities.  The
-    samples' logs are added.  ``log_likelihoods`` is ``[sample][allele][dosage]``
-    and ``priors`` is ``[ploidy][allele][dosage]``, as in ``MarkerCall``.
+    samples' logs are added.  ``log_likelihoods`` is ``[sample][allele][dosage]``,
+    ``priors`` is ``[group][allele][dosage]`` and ``prior_groups`` gives each
+    sample's group, as in ``MarkerCall``.
     """
-    log_priors = {ploidy: log_probabilities(prior[allele]) for ploidy, prior in priors.items()}
+    log_priors = {group: log_probabilities(prior[allele]) for group, prior in priors.items()}
     total = 0.0
-    for sample_log_likelihoods, ploidy in zip(log_likelihoods, ploidies):
+    for sample_log_likelihoods, group in zip(log_likelihoods, prior_groups):
         sample_total = log_sum_of_exponentials(
             [
                 log_likelihood + log_prior
-                for log_likelihood, log_prior in zip(sample_log_likelihoods[allele], log_priors[ploidy])
+                for log_likelihood, log_prior in zip(sample_log_likelihoods[allele], log_priors[group])
             ]
         )
         # A sample whose counts the prior rules out entirely is left out, as its posterior
@@ -1187,7 +1161,7 @@ def fit_allele_bias(
                 warm_start,
             )
             log_prior = -(log_bias**2) / (2.0 * BIAS_LOG_PRIOR_SD**2)
-            log_likelihood = marginal_log_likelihood(result.log_likelihoods, result.priors, ploidies)
+            log_likelihood = marginal_log_likelihood(result.log_likelihoods, result.priors, result.prior_groups)
             fits[log_bias] = (log_likelihood + log_prior, result)
         return fits[log_bias][0]
 
@@ -1262,8 +1236,8 @@ def call_marker(
     (the two steps of an EM iteration), and the passes repeat until neither
     the frequencies nor any prior probability changes by more than the
     tolerance.  With the ``structure`` prior the record is first called with
-    the ``hwe`` prior and then continued with each sample's prior taken from
-    its neighbours (``_neighbour_passes``).
+    the ``hwe`` prior, and the passes are then run again with each sample's
+    prior taken from its neighbours (``_neighbourhood_frequencies``).
 
     A record with two alleles is computed for its second (alternate) allele
     only; the first is its mirror image (``_with_mirrored_reference_allele``).
@@ -1293,13 +1267,19 @@ def call_marker(
     if two_alleles and settings.fit_allele_bias:
         result = fit_allele_bias(depths, marker_depths, count_constants, ploidies, settings, frequencies)
     else:
-        # The structure prior starts from the Hardy-Weinberg result, which _iterate_marker
-        # gives for any prior it does not fit itself.
+        # Without neighbours, _iterate_marker gives the structure prior Hardy-Weinberg
+        # proportions, which is where its second run starts from.
         result = _iterate_marker(
             depths, marker_depths, count_constants, ploidies, settings, frequencies, [1.0] * len(frequencies)
         )
     if use_neighbours:
-        result = _neighbour_passes(depths, marker_depths, count_constants, ploidies, settings, result)
+        shared = result
+        result = _iterate_marker(
+            depths, marker_depths, count_constants, ploidies, settings, shared.allele_frequencies,
+            shared.allele_biases, warm_start=shared, neighbours=settings.neighbours,
+        )
+        result.iterations += shared.iterations
+        result.converged = result.converged and shared.converged
     return _with_mirrored_reference_allele(result, ploidies) if two_alleles else result
 
 
@@ -1449,26 +1429,26 @@ def marker_overdispersion_log_likelihoods(
         return None
     frequency = frequency_for_likelihood(result.allele_frequencies[1], len(depths))
     bias = result.allele_biases[1]
-    log_priors = {ploidy: log_probabilities(prior[1]) for ploidy, prior in result.priors.items()}
+    log_priors = {group: log_probabilities(prior[1]) for group, prior in result.priors.items()}
     # The samples with reads, each with the term of count_constant that no overdispersion changes.
     samples_with_reads = [
         (alternate_depth, reference_depth + alternate_depth,
-         log_binomial_coefficient(reference_depth + alternate_depth, alternate_depth), ploidy)
-        for (reference_depth, alternate_depth), ploidy in zip(depths, ploidies)
+         log_binomial_coefficient(reference_depth + alternate_depth, alternate_depth), ploidy, group)
+        for (reference_depth, alternate_depth), ploidy, group in zip(depths, ploidies, result.prior_groups)
         if reference_depth + alternate_depth > 0
     ]
     totals = []
     for value in grid:
         at_value = dataclasses.replace(settings, overdispersion=value)
-        shapes = {ploidy: dosage_shapes(ploidy, frequency, at_value, bias) for ploidy in log_priors}
+        shapes = {ploidy: dosage_shapes(ploidy, frequency, at_value, bias) for ploidy in set(ploidies)}
         log_gamma_of_value = math.lgamma(value)
         total = 0.0
-        for alternate_depth, marker_depth, log_coefficient, ploidy in samples_with_reads:
+        for alternate_depth, marker_depth, log_coefficient, ploidy, group in samples_with_reads:
             # count_constant, with its terms in the same order.
             constant = log_coefficient + log_gamma_of_value - math.lgamma(marker_depth + value)
             log_likelihoods = log_likelihoods_for_counts(alternate_depth, marker_depth, constant, shapes[ploidy])
             sample_total = log_sum_of_exponentials(
-                [log_likelihood + log_prior for log_likelihood, log_prior in zip(log_likelihoods, log_priors[ploidy])]
+                [log_likelihood + log_prior for log_likelihood, log_prior in zip(log_likelihoods, log_priors[group])]
             )
             if sample_total > NEGATIVE_INFINITY:
                 total += sample_total
