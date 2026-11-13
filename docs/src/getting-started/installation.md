@@ -126,7 +126,7 @@ madcats --version
 ```
 
 ```
-madcats 0.13.0
+madcats 0.14.0
 ```
 
 To run the test suite from a source checkout:

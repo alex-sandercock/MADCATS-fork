@@ -3,7 +3,7 @@
 Notable changes by version. Measurements behind each change are in the
 [development record](https://github.com/Breeding-Insight/MADCATS/blob/main/docs/DEVELOPMENT.md) on GitHub.
 
-## Unreleased
+## 0.14.0
 
 - New command `call`, in its own module, `madcats_call.py`. It calls genotypes from a MADC (from
   `generate` or `filter-paralogs`, a vendor MADC, or HapApp's fixed-allele-ID output) and writes

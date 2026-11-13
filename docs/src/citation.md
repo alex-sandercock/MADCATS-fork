@@ -75,5 +75,5 @@ Bioinformatics 36(6):1795-1800. https://doi.org/10.1093/bioinformatics/btz852
 In your methods section:
 
 > Microhaplotype read counts were generated from the demultiplexed FASTQ files with MADCATS
-> v0.13.0 (Sandercock, 2026), using panel tags reconstructed from the vendor design files and
+> v0.14.0 (Sandercock, 2026), using panel tags reconstructed from the vendor design files and
 > default evidence and denoising settings.

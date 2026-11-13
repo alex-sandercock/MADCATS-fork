@@ -71,8 +71,8 @@ Releases are driven by a version tag. The version lives in one place, `__version
 2. Commit, then tag and push:
 
    ```bash
-   git tag v0.13.0
-   git push origin v0.13.0
+   git tag v0.14.0
+   git push origin v0.14.0
    ```
 
 3. `.github/workflows/release.yml` then:

@@ -1437,7 +1437,7 @@ are a separate class: their target sits at position 110, one base past the
 109-bp window (the vendor's SNP report lists them without a position, and
 the 110th base segregates in the plates whose reads are longer than 109 bp).
 
-## Genome paralog filter (`filter-paralogs`, unreleased)
+## Genome paralog filter (`filter-paralogs`, 0.14.0)
 
 On the public lettuce 3K DArTag data about two thirds of the reads come from
 paralogous copies. A paralog read that carries the target base becomes a
@@ -1887,7 +1887,7 @@ DArTag way) and as the reference base.
   with an ambiguity code there the position gets no off-target record, and
   the variant is reported once.
 
-## Genotype calling (`call`, unreleased)
+## Genotype calling (`call`, 0.14.0)
 
 `madcats call` (in `madcats_call.py`) calls genotypes from a MADC and writes
 VCFs. The model is adapted from polyRAD 2.0.1: a beta-binomial likelihood of

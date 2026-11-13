@@ -172,7 +172,7 @@ from typing import Dict, Iterable, Iterator, List, Mapping, MutableMapping, Name
 # ============================================================================
 
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 # Increment only when the serialized per-sample cache or raw-read processing
 # changes. Output-row filtering does not invalidate reusable FASTQ counts.
