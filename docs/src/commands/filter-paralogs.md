@@ -247,6 +247,26 @@ It kept 113,667 rows, with 35.7% of the reads. See the
   figures count the canonical Ref and Alt rows, which are always kept; among the rows the filter
   decides, they are 97.3% and 94.8%.
 - Only the tag is aligned (81 bases by default), not the full read.
+- An allele of the marker that is as near a copy as it is to its own site is `ambiguous`. With
+  copies planted one or two bases from the Ref tag, 8 of 349 rows of the markers themselves were
+  lost this way; with copies that differ more, none of 515.
+- In a polyploid whose reference carries every subgenome or haplotype, a tag has a copy on each,
+  and those copies are treated as any other: reads of a diverged copy are labelled `paralog`, and
+  an identical copy makes the marker's rows `ambiguous`. This has not been measured on a
+  polyploid panel.
+
+## How It Was Checked
+
+- **Planted copies.** In the delta smelt genome (437 Mb) copies of 105 markers' tags were added
+  as new contigs, with the rows a co-amplified copy would give added to a real MADC. Every row
+  from a copy 1 to 8 bases, or a base and a 2-base deletion, from the Ref tag was labelled
+  `paralog` (450 of 450 over three draws), and no row of the 263 untouched markers was mislabelled
+  (3,348 rows). A copy left out of the genome was not seen.
+- **Placement.** On the same data all 368 markers were placed where their two primers lie in the
+  genome, with CloneID positions or without. Markers given a wrong position were left unplaced,
+  not placed elsewhere.
+- **Against bwa mem.** The lettuce figures above.
+- Output does not depend on `--jobs`.
 
 ## See Also
 

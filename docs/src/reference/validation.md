@@ -106,3 +106,17 @@ on identical reads, MADCATS was the more Mendelian-consistent of the pair (99.94
 Across 127,667 emitted rows in six MADCs spanning five platforms, zero rows contain TruSeq or Ion P1
 adapter at a strict 13-mer probe. Trimming adapters before a run changed dosage concordance by 0.05
 points on the capture benchmark while costing 2 points of extraction.
+
+## Genome Paralog Filter (`filter-paralogs`)
+
+- **Lettuce 3K DArTag** (the panel the filter was built on): the rows kept or dropped agreed with a
+  bwa-mem classification for 98.2% of the rows of a MADCATS MADC and 94.9% of a vendor MADC; among
+  the rows the filter decides, 97.3% and 94.8%.
+- **Delta smelt GT-seq, placement:** all 368 markers were placed where their two primers lie in the
+  437 Mb genome, and no row of this paralog-free panel was dropped.
+- **Delta smelt GT-seq, planted copies:** with copies of 105 markers' tags added to the genome and
+  the matching rows added to the MADC, every row from a copy 1 to 8 bases from the Ref tag, or
+  with a 2-base deletion, was labelled `paralog` (450 of 450), and no row of an untouched marker
+  was mislabelled (3,348 rows). A copy that is not in the genome is not seen.
+
+See [`filter-paralogs`](../commands/filter-paralogs.md#how-it-was-checked).

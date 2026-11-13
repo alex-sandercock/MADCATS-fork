@@ -1560,6 +1560,92 @@ bases it is found at `best_n` 50. bwa agreement is concordance, not truth:
 source-known fixtures for both errors (target evidence removed, paralog
 evidence kept) are still to be built.
 
+Review of the module. Two readers went through `madcats_paralogs.py`, one for
+structure and one for names, comments, sources and tests, as was done for
+`madcats_call.py`. Three defects were fixed:
+
+| Defect | Effect before | Now |
+|---|---|---|
+| A minimap2 index in several parts was refused only as `--genome-index` | Given as `--genome` it was loaded, mappy searched its first part, and markers on later contigs were judged without their own site | Refused whichever option names it |
+| A processed MADC's `readCountSum` column was taken for a sample by `validate` and `filter-paralogs` (only `call` skipped it) | QC read totals of `filter-paralogs` doubled; `validate` listed it among the samples | Skipped by the helper all three use |
+| A run that failed while writing (a non-numeric count in a late row) | A truncated MADC and labels file stayed on disk | Removed |
+
+The rest changed no output: `filter_paralogs`, 211 lines doing five jobs, is
+now five functions; both passes read their rows through one generator; the
+MADC's header is checked before the index is loaded; names and comments were
+corrected against the code (the genome-wide search returns up to 51 hits, not
+50; a marker is placed by its CloneID position as well as its Ref tag; the
+score is that of the reported alignment and not minimap2's `AS`); and the
+module says what is minimap2's (Li 2018; Li 2021) and what is MADCATS's own.
+The outputs of eight runs on the data below were the same before and after,
+byte for byte, and the same on one thread and on four.
+
+Rows with an empty `AlleleID`, or too short to hold the identity columns, are
+passed over by both passes and are not counted in the QC totals. That is now
+documented and tested; counting them would add a key to the QC JSON and was
+left for a decision.
+
+Delta smelt GT-seq: placement against the primers. The public smelt data
+(see "Delta smelt GT-seq against alignment-based genotypes" under genotype
+calling) give a second species and platform, and an independent answer for
+where each marker lies: the 81 bases from its forward primer, found by exact
+search of both primers in the genome (GCA_021917145.1, 437 Mb). The MADC has
+368 markers, 1,527 rows and 10.2 million reads.
+
+| Run | Markers at the expected site | Unplaced | Rows labelled |
+|---|---|---|---|
+| CloneIDs renamed to CHROM_POS of the target | 368 | 0 | 1,527 on_target |
+| The same, `--clone-positions ignore` | 368 | 0 | 1,527 on_target |
+| 29 markers' positions moved 5,000 bases and 15 put on another chromosome | 324 | 44, the moved ones | 1,350 on_target, 177 unplaced |
+| The same, `--clone-positions ignore` | 368 | 0 | 1,527 on_target |
+| CloneIDs as generated (locus names such as `NC_061060_1_U618`) | 354 | 14 | 1,494 on_target, 33 unplaced |
+
+No row was labelled `paralog` or `ambiguous` and none was dropped: the panel
+has no paralogs in this genome, so this checks placement and false positives.
+A marker with a wrong position is left unplaced, not misplaced. In the last
+run 100 locus names end in an underscore and digits and are read as
+CHROM_POS; for 14 the number is not within the tag and the marker is left
+unplaced. A CloneID that looks like a position is taken for one, which
+`--clone-positions ignore` avoids. Eight runs took 38 s on four threads,
+building the index once.
+
+Planted paralogs. The record above says the agreement with bwa mem is
+concordance and that cases with a known answer were still to be built. They
+were built in the smelt genome: for each of 105 markers drawn at random, a
+copy of the genome around its tag (the tag and 100 bases either side) was
+changed and added to the genome as a contig of its own, and the MADC was
+given the rows a co-amplified copy would give (the copy's tag, and that tag
+with one more substitution, with half the Ref row's reads each). Fifteen
+markers per class and three random draws; CloneIDs are CHROM_POS; default
+options:
+
+| Planted copy | Rows from the copy labelled `paralog` | Rows of the marker itself labelled `on_target` |
+|---|---|---|
+| None (263 markers per draw) | | 3,348 of 3,348 |
+| 1 substitution from the Ref tag | 90 of 90 | 173 of 179 (4 `ambiguous`, 2 `paralog`) |
+| 2 substitutions | 90 of 90 | 168 of 170 (2 `ambiguous`) |
+| 4 substitutions | 90 of 90 | 165 of 165 |
+| 8 substitutions | 90 of 90 | 183 of 183 |
+| 1 substitution and a 2-base deletion | 90 of 90 | 167 of 167 |
+| Identical copy | | 1 of 192; 191 `ambiguous`, of which 90 canonical rows were kept |
+| 4 substitutions, copy not added to the genome | 0 of 90: all `on_target` | 177 of 177 |
+
+- Every row from a copy that is in the genome was labelled `paralog` and
+  dropped, 450 of 450, and no row of an unplanted marker was mislabelled.
+- Of the 864 rows of markers with a copy in the genome, 8 were lost, all at
+  copies one or two bases from the Ref tag: an allele of the marker that is
+  as near the copy as its own site is `ambiguous`, and one that carries the
+  copy's base is the copy's sequence.
+- An identical copy makes the marker's rows `ambiguous`; the default drops
+  them and keeps the canonical Ref and Alt rows.
+- A copy that is not in the assembly is not seen: its rows are kept as
+  alleles of the marker.
+
+The same design, twenty markers on a random genome, is in the test suite
+(`PlantedCopyTests`). Not covered: a polyploid panel, where a
+subgenome-resolved reference has a copy of every tag on each subgenome; a
+fragmented or diverged reference; and a second real panel with paralogs.
+
 ## Genotype calling (`call`, unreleased)
 
 `madcats call` (in `madcats_call.py`) calls genotypes from a MADC and writes
