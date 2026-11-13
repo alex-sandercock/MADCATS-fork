@@ -103,8 +103,8 @@ in the QC JSON.
   prior lost 3.4 points and `call` chose 0 neighbours.
 - It needs at least 20 samples and 100 markers with reads to compare samples on; below that it is
   the `hwe` prior, with a note.
-- It cannot be combined with `--allele-bias fit` or `--selfing-rate`. Neither combination has been
-  tested.
+- It cannot be combined with `--allele-bias fit` or `auto`, or with `--selfing-rate`. These
+  combinations have not been tested.
 - It takes two to three times as long as `--prior hwe`.
 - The method is MADCATS's own, not a port. polyRAD models structure with principal components;
   that approach and a relationship-matrix predictor were tried in its place and were no better
@@ -212,7 +212,7 @@ get haplotype records and off-target records.
 |--------|---------|-------------|
 | `--prior {uniform,hwe,norm,structure}` | `hwe` | Genotype prior (see [the genotype model](#the-genotype-model)) |
 | `--selfing-rate <FLOAT>` | 0 | With `--prior hwe`, the share of individuals that come from self-fertilisation: 0 is random mating, 1 is fully inbred lines |
-| `--allele-bias {off,fit}` | `off` | Allelic bias, where a copy of one allele yields more reads than a copy of the other. `fit` estimates it for each record with two alleles (see below). Not with `--prior structure` |
+| `--allele-bias {off,fit,auto}` | `off` | Allelic bias, where a copy of one allele yields more reads than a copy of the other. `fit` estimates it for each record with two alleles; `auto` estimates it likewise and keeps it only for the records whose read counts it explains clearly better (see below). Not with `--prior structure` |
 | `--overdispersion <auto\|FLOAT>` | `auto` | Beta-binomial overdispersion parameter, as in polyRAD. Lower values allow read fractions to stray further from the expected fraction. `auto` estimates it from the read counts (see below); a number sets it |
 | `--background-rate <auto\|FLOAT>` | `auto` | Probability that a read shows one allele although it came from another. `auto` estimates it from the read counts (see below); a number sets it |
 | `--contamination-rate <FLOAT>` | 0 | polyRAD's contamination: the share of a sample's reads that come from other samples and show an allele at its frequency among them. `--background-rate` covers the same reads and more, so this is off unless set; polyRAD uses 0.001 |
@@ -258,7 +258,7 @@ them.
   sampling of reads would.
 - A table with fewer than 100 sample-by-marker cells with reads is too small to estimate from;
   `call` says so and uses an overdispersion of 9 and a background rate of 0.002.
-- With `--allele-bias fit` the estimate fits the bias too. Without it, biased markers look like
+- With `--allele-bias fit` or `auto` the estimate fits the bias too. Without it, biased markers look like
   scatter and the overdispersion comes out lower (30 and 40 against 150 on the two alfalfa
   populations).
 - This is not polyRAD's `TestOverdispersion`, which on simulated tetraploid and hexaploid counts
@@ -274,6 +274,13 @@ sample with two copies of each allele in four does not show half its reads for e
 without regard to this, such a marker gets shifted dosages. `--allele-bias fit` estimates the bias
 of every record with two alleles (targets, and off-target sites with two bases) and calls with it.
 Haplotype records and sites with three or more bases are called without a bias.
+
+`--allele-bias auto` fits the bias in the same way and then keeps it only for the records where it
+raises the log-likelihood of the read counts, after the prior on the bias, by 10 or more over no
+bias. The other records are called exactly as without a bias. A bias fitted to a marker that has
+none follows the noise in its counts and costs accuracy, most of all in hexaploids, and this
+leaves such markers alone. The overdispersion and background rate are estimated as with `fit`.
+The rule is MADCATS's own; updog always keeps the bias it fits.
 
 The bias is updog's (Gerard et al. 2018): with bias *h*, an expected read fraction *f* of the
 reference allele becomes *f* / (*h*(1 − *f*) + *f*), so below 1 the reference allele is
@@ -293,11 +300,30 @@ settings equal, the fitted bias and the genotypes match updog's.
   nothing about its bias, which matters because the background rate is one value for the table.
 - The search covers biases from 0.14 to 7.4. A record whose fit ends at either limit is counted in
   the QC JSON and marked in the bias table; such a marker is usually not behaving as one locus.
-- The VCF carries the bias as `INFO/BIAS`, and `PREFIX.bias.csv` lists every fitted record.
+- The VCF carries the bias as `INFO/BIAS`, and `PREFIX.bias.csv` lists every fitted record with
+  what its best bias gained over no bias (`Gain`). With `auto` a record that did not keep its fit
+  has a bias of 1, and the QC JSON counts the records that kept one.
 
 When to fit it, from read counts drawn with updog's and polyRAD's own simulators, two tetraploid
-alfalfa populations and 85 tetraploid potato clones that also have SNP-array genotypes (the tables
-are in the development record):
+alfalfa populations, potato clones that also have SNP-array genotypes, delta smelt and polyploids
+pooled from smelt reads (the tables are in the development record):
+
+- If you do not know whether a panel is biased, use `auto`. Share of genotypes right with
+  `--prior hwe`:
+
+  | Data | `off` | `fit` | `auto` |
+  |---|---|---|---|
+  | Potato, 85 tetraploid clones, against a SNP array | 92.3% | 96.6% | 96.5% |
+  | Potato vendor MADC, tetraploids | 86.4% | 91.3% | 91.2% |
+  | Potato vendor MADC, diploids | 92.0% | 92.6% | 92.6% |
+  | Tetraploids pooled from real diploid reads, 50 reads | 90.6% | 89.7% | 90.5% |
+  | Hexaploids pooled from real diploid reads, 50 reads | 77.6% | 69.8% | 77.6% |
+  | Delta smelt (diploid), against alignment-based genotypes | 99.4% | 99.3% | 99.3% |
+
+  On the potato data half to two thirds of the records keep their bias; on the pooled reads, which
+  have none, about 3 in 100 do. `auto` takes as long as `fit`. It is not the default because of
+  that time, and because on the smelt data it stays 0.1 points under `off`: there the loss comes
+  with the read model that a run with a bias estimates, not with the biases kept.
 
 - Use it with `--prior norm`. With `--prior hwe` it lost accuracy wherever the samples were not in
   Hardy-Weinberg proportions (families, inbred lines).
@@ -354,7 +380,7 @@ madcats call --madc results/panel_MADC.csv --output-prefix results/panel \
 |------|----------|
 | `PREFIX.targets.vcf`, `PREFIX.all.vcf`, `PREFIX.haplotypes.vcf` | The VCFs chosen with `--vcf` (VCF 4.3, uncompressed) |
 | `PREFIX.haplotypes.alleles.csv` | With `--vcf haplotype`: for each marker and allele number, the MADC AlleleIDs it was counted from, its sequence and its total reads |
-| `PREFIX.bias.csv` | With `--allele-bias fit`: for each fitted record, the bias of the reference allele, the log-likelihood of the fit (after the prior on the bias), the starting value the search continued from, the number of bias values tried, and whether the fit converged or ended at a search limit |
+| `PREFIX.bias.csv` | With `--allele-bias fit` or `auto`: for each fitted record, the bias of the reference allele (1 where `auto` did not keep the fit), the log-likelihood of the call (after the prior on the bias), what the best-fitting bias gained over no bias, the starting value the search continued from, the number of bias values tried, and whether the fit converged or ended at a search limit |
 | `PREFIX.qc.json` | Parameters, the model in words, the overdispersion and background-rate estimates, the number of neighbours chosen for the structure prior, a summary of the fitted biases, samples per ploidy, and per VCF: records, genotypes called and missing by reason, reads used and excluded, records that did not converge, targets skipped by reason |
 
 ### VCF fields
@@ -371,7 +397,7 @@ madcats call --madc results/panel_MADC.csv --output-prefix results/panel \
 | `PL` | two-allele records | Phred-scaled likelihood of each genotype, before the prior |
 | `MPC` | records with more than two alleles; every haplotype record | Lowest marginal posterior among the called dosages |
 | `INFO/TARGET` | `target`, `all` | The record is a marker's designed variant |
-| `INFO/BIAS` | two-allele records, with `--allele-bias fit` | Fitted allelic bias of the reference allele, as updog reports it for reference read counts |
+| `INFO/BIAS` | two-allele records, with `--allele-bias fit` or `auto` | Fitted allelic bias of the reference allele, as updog reports it for reference read counts; 1 where `auto` did not keep the fit |
 | `INFO/NS` | all | Samples with a called genotype |
 | `INFO/AF` | all | Estimated frequency of each alternate allele |
 

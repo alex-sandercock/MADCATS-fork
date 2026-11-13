@@ -45,7 +45,8 @@ MADCATS's own, with no published counterpart: the estimate of the
 overdispersion and of one background-read rate for the whole table
 (``estimate_overdispersion``, ``estimate_read_model``) and its use of the
 free-weights prior, the order of bias before background reads, the search for
-the allelic bias (``fit_allele_bias``), the fit of the ``norm`` prior by
+the allelic bias (``fit_allele_bias``) and the rule that keeps a fitted bias
+only where it gains a margin (``BIAS_AUTO_MIN_GAIN``), the fit of the ``norm`` prior by
 Newton's method and its fit per ploidy, the neighbour-based ``structure``
 prior (``find_neighbours``), the exact search for dosages that sum to the
 ploidy as a check on polyRAD's rule, and the VCF fields (GQ, GP, PL, MPC).
@@ -201,6 +202,10 @@ class ModelSettings:
     fit_allele_bias: estimate an allelic bias for every record with two
         alleles (see ``fit_allele_bias``).  Without it both alleles are taken
         to be read equally well.
+    min_bias_gain: with ``fit_allele_bias``, what a record's fitted bias must
+        add to the log-likelihood of its read counts, after the prior on the
+        bias, for the record to keep it; a record that gains less is called
+        without a bias.  0 keeps every fitted bias.
     tolerance: the passes of a record stop once the change they watch is at
         or below this: the mean absolute change in the record's allele
         frequencies (``hwe``), also the largest change in any prior
@@ -222,6 +227,7 @@ class ModelSettings:
     prior: str = PRIOR_HWE
     selfing_rate: float = 0.0
     fit_allele_bias: bool = False
+    min_bias_gain: float = 0.0
     tolerance: float = DEFAULT_TOLERANCE
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     neighbours: Optional[Tuple[Tuple[int, ...], ...]] = None
@@ -243,6 +249,8 @@ class ModelSettings:
             raise ValueError("tolerance must be positive")
         if self.max_iterations < 1:
             raise ValueError("max_iterations must be at least 1")
+        if self.min_bias_gain < 0:
+            raise ValueError("min_bias_gain must be at least 0")
         if self.fit_allele_bias and self.prior == PRIOR_STRUCTURE:
             # The bias search scores a bias by the prior shared within a ploidy; it has not
             # been worked out or tested for priors that differ from sample to sample.
@@ -1157,6 +1165,12 @@ BIAS_LOG_PRIOR_SD = 0.7
 # stops when the log of the bias is known to this precision (about 1% of the bias).
 BIAS_LOG_LIMIT = 2.0
 BIAS_LOG_TOLERANCE = 0.01
+# With --allele-bias auto a record keeps its fitted bias only when the fit raises the
+# log-likelihood of its read counts, after the prior on the bias, by this much over no
+# bias (``ModelSettings.min_bias_gain``).  The value is MADCATS's own, chosen on potato,
+# delta smelt and polyploids pooled from smelt reads: at 10 the records of biased data
+# keep their bias and nine in ten records of unbiased data give it up (docs/DEVELOPMENT.md).
+BIAS_AUTO_MIN_GAIN = 10.0
 
 
 class BiasFit(NamedTuple):
@@ -1168,6 +1182,9 @@ class BiasFit(NamedTuple):
     ``nearest_log_start`` is the log bias of the starting value nearest the
     result, ``fits`` the number of bias values tried, and ``at_limit``
     whether the result is the largest or smallest bias the search allows.
+    ``gain`` is how much the best-fitting bias raised the objective over no
+    bias.  Where that is less than ``ModelSettings.min_bias_gain`` the record
+    was called without a bias, and ``log_bias`` is 0.
     """
 
     log_bias: float
@@ -1175,6 +1192,7 @@ class BiasFit(NamedTuple):
     nearest_log_start: float
     fits: int
     at_limit: bool
+    gain: float
 
 
 def log_probability_of_counts(log_likelihoods: Sequence[float], log_prior: Sequence[float]) -> float:
@@ -1249,6 +1267,13 @@ def fit_allele_bias(
     share one or two dosages, the reads fit equally well with every dosage
     shifted by one and a strong bias; only the prior on the bias tells the
     two apart, and only once each has been refined to its best bias.
+
+    With ``settings.min_bias_gain`` the best bias is kept only when it raises
+    that value by as much over no bias, which is always among the calls made;
+    otherwise the record's result is its call without a bias.  A bias fitted
+    to a record that has none follows the noise in its counts, and on reads
+    without bias this cost accuracy, most of all in hexaploids.  The rule is
+    MADCATS's own; updog always keeps the bias it fits.
     """
     tried: Dict[float, Tuple[float, RecordCall]] = {}
 
@@ -1283,10 +1308,15 @@ def fit_allele_bias(
             objective, max(-BIAS_LOG_LIMIT, centre - step), min(BIAS_LOG_LIMIT, centre + step), BIAS_LOG_TOLERANCE
         )
     log_bias = max(tried, key=lambda value: tried[value][0])
+    gain = tried[log_bias][0] - tried[0.0][0]
+    if gain < settings.min_bias_gain:
+        log_bias = 0.0
     best_objective, result = tried[log_bias]
     # The starting value whose refinement gave the result: the nearest one.
     nearest_log_start = min(BIAS_LOG_STARTS, key=lambda start: abs(start - log_bias))
-    result.bias_fit = BiasFit(log_bias, best_objective, nearest_log_start, len(tried), abs(log_bias) >= BIAS_LOG_LIMIT)
+    result.bias_fit = BiasFit(
+        log_bias, best_objective, nearest_log_start, len(tried), abs(log_bias) >= BIAS_LOG_LIMIT, gain
+    )
     return result
 
 
@@ -2411,8 +2441,8 @@ def format_record(
         info.append("BIAS=" + _decimal(reference_bias, 3))
         fit = result.bias_fit
         bias_row = BiasRow(
-            position, record_id, reference_bias, fit.objective, math.exp(-fit.nearest_log_start), fit.fits,
-            result.converged, fit.at_limit,
+            position, record_id, reference_bias, fit.objective, fit.gain, math.exp(-fit.nearest_log_start),
+            fit.fits, result.converged, fit.at_limit,
         )
     format_keys = ["GT", "AD", "DP"] + (["XD"] if excluded_depths is not None else []) + value_keys
     line = "\t".join(
@@ -2428,13 +2458,15 @@ class BiasRow(NamedTuple):
 
     ``bias`` and ``best_start`` are for the reference allele, as in the VCF's
     BIAS field.  ``objective`` is the log-likelihood of the record's read
-    counts plus the log of the prior on the bias.
+    counts plus the log of the prior on the bias, and ``gain`` what the
+    best-fitting bias added to it over no bias (see ``BiasFit``).
     """
 
     position: int
     record_id: str
     bias: float
     objective: float
+    gain: float
     best_start: float
     fits: int
     converged: bool
@@ -2676,6 +2708,8 @@ def model_description(
             "; allelic bias fitted for each record with two alleles (updog's bias; Gerard et al. 2018), with a "
             f"normal prior of standard deviation {BIAS_LOG_PRIOR_SD:g} on its log"
         )
+        if settings.min_bias_gain > 0:
+            prior += f", and kept where it raises the log-likelihood by {settings.min_bias_gain:g} or more"
     return (
         f"beta-binomial read-count likelihood (overdispersion {settings.overdispersion:g}{source}, contamination rate "
         f"{settings.contamination_rate:g}, background-read rate {settings.background_rate:g}{background_source}) "
@@ -2709,7 +2743,7 @@ def vcf_header(
         lines.append(
             '##INFO=<ID=BIAS,Number=1,Type=Float,Description="Fitted allelic bias of the reference allele, as updog '
             'reports it for reference read counts: below 1 the reference allele is over-represented among the reads, '
-            'above 1 under-represented (two-allele records)">'
+            'above 1 under-represented, 1 where --allele-bias auto did not keep the fit (two-allele records)">'
         )
     lines += [
         '##INFO=<ID=NS,Number=1,Type=Integer,Description="Samples with a called genotype">',
@@ -2848,10 +2882,13 @@ def choose_read_model(
             background_report,
         )
 
+    # With an allelic bias, the estimate fits every record's bias and keeps it, whatever
+    # ``min_bias_gain`` the calls will use: giving up the small biases here as well changed
+    # the estimate little and did not help the calls.
     estimate = estimate_read_model(
         depths_by_marker,
         ploidies,
-        dataclasses.replace(settings, prior=PRIOR_FREE, selfing_rate=0.0),
+        dataclasses.replace(settings, prior=PRIOR_FREE, selfing_rate=0.0, min_bias_gain=0.0),
         BACKGROUND_RATE_GRID if requested_background_rate == AUTO else (requested_background_rate,),
         OVERDISPERSION_GRID if requested_overdispersion == AUTO else (requested_overdispersion,),
         parallel_map,
@@ -2986,16 +3023,18 @@ def write_bias_table(prefix: str, outputs: Sequence[MarkerOutput]) -> Tuple[Opti
     with bias_path.open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(
-            ["CloneID", "Position", "RecordID", "Bias", "LogLikelihood", "BestStart", "Fits", "Converged", "AtLimit"]
+            ["CloneID", "Position", "RecordID", "Bias", "LogLikelihood", "Gain", "BestStart", "Fits", "Converged",
+             "AtLimit"]
         )
         for clone_id, row in bias_rows:
             writer.writerow(
                 [clone_id, row.position, row.record_id, _decimal(row.bias), _decimal(row.objective, 3),
-                 _decimal(row.best_start), row.fits, int(row.converged), int(row.at_limit)]
+                 _decimal(row.gain, 3), _decimal(row.best_start), row.fits, int(row.converged), int(row.at_limit)]
             )
     biases = sorted(row.bias for _, row in bias_rows)
     summary = {
         "records_fitted": len(biases),
+        "records_with_a_bias": sum(1 for bias in biases if bias != 1.0),
         "median": round(biases[len(biases) // 2], 4),
         "outside_0.8_to_1.25": sum(1 for bias in biases if not 0.8 <= bias <= 1.25),
         "outside_0.67_to_1.5": sum(1 for bias in biases if not 2 / 3 <= bias <= 1.5),
@@ -3014,8 +3053,8 @@ def run_call(args: argparse.Namespace) -> int:
     vcf_types = tuple(vcf_type for vcf_type in VCF_TYPES if vcf_type in args.vcf)
     if args.selfing_rate > 0 and args.prior != PRIOR_HWE:
         raise MadcError("--selfing-rate applies to --prior hwe only")
-    if args.allele_bias == "fit" and args.prior == PRIOR_STRUCTURE:
-        raise MadcError("--allele-bias fit cannot be combined with --prior structure")
+    if args.allele_bias != "off" and args.prior == PRIOR_STRUCTURE:
+        raise MadcError(f"--allele-bias {args.allele_bias} cannot be combined with --prior structure")
 
     sample_names, rows_by_marker, count_overflow = read_count_table(madc)
     ploidy_by_sample = read_ploidy_table(Path(args.ploidy_file)) if args.ploidy_file else {}
@@ -3060,7 +3099,8 @@ def run_call(args: argparse.Namespace) -> int:
         contamination_rate=args.contamination_rate,
         prior=args.prior,
         selfing_rate=args.selfing_rate,
-        fit_allele_bias=args.allele_bias == "fit",
+        fit_allele_bias=args.allele_bias != "off",
+        min_bias_gain=BIAS_AUTO_MIN_GAIN if args.allele_bias == "auto" else 0.0,
         tolerance=args.tol,
         max_iterations=args.max_iterations,
     )
@@ -3295,11 +3335,13 @@ def add_call_command(subparsers) -> None:
     )
     calling.add_argument(
         "--allele-bias",
-        choices=("off", "fit"),
+        choices=("off", "fit", "auto"),
         default="off",
         help=(
             "allelic bias, where one allele yields more reads per copy than the other: off assumes none; fit "
-            "estimates it for each record with two alleles, as updog does, which takes several times longer "
+            "estimates it for each record with two alleles, as updog does; auto estimates it likewise and keeps "
+            f"it only for the records whose read counts it explains better by a margin ({BIAS_AUTO_MIN_GAIN:g} "
+            "in log-likelihood), calling the others without one. fit and auto take several times longer "
             "(default: off)"
         ),
     )

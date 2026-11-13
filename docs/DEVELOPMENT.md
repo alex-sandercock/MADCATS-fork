@@ -2693,13 +2693,13 @@ giving `--overdispersion` and `--background-rate` as numbers once a first run
 has estimated them (57 s where the full run takes 170 s), or by a compiled
 kernel, which is not planned.
 
-**Keeping a fitted bias only where it earns its place: measured, not built.**
+**Keeping a fitted bias only where it earns its place (`--allele-bias auto`).**
 Fitting the bias raises agreement with the array by 4 points on the potato
 data and lowers accuracy on tables without bias, by up to 8 points for
-hexaploids pooled from real diploid reads (below). A rule that could be the
-default was tried in a scratch copy of the module: a record keeps its fitted
-bias only when the fit raises the log-likelihood, after the prior on the
-bias, by a set margin over calling without one. Each data set was called with
+hexaploids pooled from real diploid reads (below). A rule was tried in a
+scratch copy of the module, and then built: a record keeps its fitted bias
+only when the fit raises the log-likelihood, after the prior on the bias, by
+a set margin over calling without one. Each data set was called with
 `--prior hwe` under the read model its own run with the bias had estimated,
 so that only the rule differs. Share of genotypes right, without filters:
 
@@ -2729,9 +2729,20 @@ Records that keep a bias at margins 0, 2, 5, 10 and 20: potato 1,513, 1,153,
   small biases; it comes with the read model the bias run estimated
   (overdispersion 200 where the run without bias has 150) or with the few
   records that keep a large bias.
-- This is evidence for a third setting of `--allele-bias`, not a change:
-  the repository's code is as it was, and whether to add the setting, and
-  whether it should be the default, is open.
+- The rule is now `--allele-bias auto`, with a margin of 10
+  (`BIAS_AUTO_MIN_GAIN`). A record that gives its bias up is called exactly as
+  without one, since the call at a bias of 1 is among those the search makes.
+  With the read model estimated by the run itself, `auto` gives the figures
+  of the margin-10 column for all five data sets, and on the potato data the
+  same records and bias table as the scratch copy.
+- The estimate of the overdispersion and background rate fits every record's
+  bias and keeps it, as under `fit`. Applying the rule in the estimate too
+  was tried: the estimates were the same or one step of the background rate
+  apart (potato 300 and 0.002 against 0.001; pooled tetraploids 500 and 0.002
+  against 0.003), and the calls were the same or 0.02 to 0.07 points worse
+  (potato 96.45% against 96.47%; pooled tetraploids 90.46% against 90.53%).
+- `off` stays the default. `auto` takes as long as `fit`, several times a run
+  without a bias, and on smelt it is 0.14 points under `off`.
 
 **The structure prior (`--prior structure`).** polyRAD's `IteratePopStruct`
 gives each sample its own allele frequencies: it runs a principal component
