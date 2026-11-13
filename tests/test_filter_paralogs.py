@@ -2,8 +2,8 @@
 rewriting, and the optional mappy aligner.
 
 Most tests use a fake aligner with preset hits, so they run without mappy.
-GenomeAlignerTests builds a tiny synthetic genome and runs the real command;
-they are skipped when mappy is not installed.
+GenomeAlignerTests and ReviewCaseTests build small synthetic genomes and use
+the real aligner; they are skipped when mappy is not installed.
 """
 import contextlib
 import csv
@@ -119,20 +119,23 @@ class HitScoreTests(unittest.TestCase):
         self.assertEqual(fp.hit_score([[40, 0], [20, 2], [41, 0]], 20, 81, 101), 162 - 44)
 
     def test_summarize_keeps_distinct_sites_best_first(self):
-        placement = fp.summarize_hits([
+        placement = fp.distinct_sites([
             hit("chrB", 500, 581), hit("chrA", 100, 181), hit("chrA", 103, 184), hit("chrC", 0, 81, score=150),
         ])
-        self.assertEqual([site.contig for site in placement.best], ["chrA", "chrB"])
+        self.assertEqual([site.contig for site in placement.equal_best], ["chrA", "chrB"])
         self.assertEqual([site.score for site in placement.sites], [162, 162, 150])
-        self.assertEqual(fp.summarize_hits([]).sites, ())
+        self.assertEqual(fp.distinct_sites([]).sites, ())
 
     def test_adjacent_tandem_copies_stay_distinct(self):
         # 81-base tags on adjacent copies of an 80-base repeat share one base: two loci, not one.
-        ref = fp.summarize_hits([hit("chr1", 500, 581), hit("chr1", 580, 661)], keep=None)
+        ref = fp.distinct_sites([hit("chr1", 500, 581), hit("chr1", 580, 661)], max_sites=None)
         self.assertEqual(len(ref.sites), 2)
         marker = fp.place_marker("chr1_540", ref, {"chr1"}, 81)
-        self.assertEqual((marker.source, marker.ref_tag_sites, marker.sites), ("ref_tag+clone_id", 2, ref.sites[:1]))
-        variant = fp.summarize_hits([hit("chr1", 500, 581, score=152), hit("chr1", 580, 661, score=152)])
+        self.assertEqual(
+            (marker.placed_by, marker.ref_tag_site_count, marker.sites),
+            ("ref_tag+clone_id", 2, ref.sites[:1]),
+        )
+        variant = fp.distinct_sites([hit("chr1", 500, 581, score=152), hit("chr1", 580, 661, score=152)])
         self.assertEqual(fp.genome_label(variant, marker).label, "ambiguous")
 
 
@@ -148,7 +151,7 @@ class PlacementTests(unittest.TestCase):
     def test_unique_ref_tag_is_cross_checked_against_the_clone_id(self):
         ref = fp.GenomePlacement((hit("Chr1", 1000, 1081),))
         placed = fp.place_marker("Chr1_1060", ref, self.contigs, 81)
-        self.assertEqual((placed.source, placed.clone_check, placed.sites), ("ref_tag", "agree", ref.best))
+        self.assertEqual((placed.placed_by, placed.clone_id_check, placed.sites), ("ref_tag", "agree", ref.equal_best))
 
     def test_disagreeing_clone_id_is_checked_in_its_own_window(self):
         # The Ref tag's best genome-wide site is on Chr2 (the search missed the design site, or this assembly
@@ -161,47 +164,53 @@ class PlacementTests(unittest.TestCase):
             return [hit("Chr1", 900, 981), hit("Chr1", 1000, 1081, score=156)]
 
         placed = fp.place_marker("Chr1_1043", ref, self.contigs, 81, align_ref_tag=align_ref_tag)
-        self.assertEqual(windows, [("Chr1", 1043 - 1 - 81 - fp.SITE_PAD, 1043 + 81 + fp.SITE_PAD)])
-        self.assertEqual((placed.source, placed.ref_tag_sites, placed.clone_check), ("clone_id_site", 1, "disagree"))
+        self.assertEqual(windows, [("Chr1", 1043 - 1 - 81 - fp.SITE_FLANK, 1043 + 81 + fp.SITE_FLANK)])
+        self.assertEqual(
+            (placed.placed_by, placed.ref_tag_site_count, placed.clone_id_check),
+            ("clone_id_site", 1, "disagree"),
+        )
         self.assertEqual(placed.sites, (hit("Chr1", 1000, 1081, score=156),))  # the alignment covering the position
         # A multi-copy Ref tag none of whose sites covers the position is checked the same way.
         copies = fp.GenomePlacement((hit("Chr2", 7000, 7081), hit("Chr2", 9000, 9081)))
         tied = fp.place_marker("Chr1_1043", copies, self.contigs, 81, align_ref_tag=align_ref_tag)
-        self.assertEqual((tied.source, tied.ref_tag_sites, tied.sites[0].contig), ("clone_id_site", 2, "Chr1"))
+        self.assertEqual((tied.placed_by, tied.ref_tag_site_count, tied.sites[0].contig), ("clone_id_site", 2, "Chr1"))
         # Where the Ref tag does not align over the CloneID position, the marker is unplaced, so it keeps its rows.
         lost = fp.place_marker("Chr1_1043", ref, self.contigs, 81, align_ref_tag=lambda *window: [hit("Chr1", 900, 981)])
-        self.assertEqual((lost.source, lost.sites, lost.ref_tag_sites, lost.clone_check), ("unplaced", (), 1, "disagree"))
+        self.assertEqual(
+            (lost.placed_by, lost.sites, lost.ref_tag_site_count, lost.clone_id_check),
+            ("unplaced", (), 1, "disagree"),
+        )
 
     def test_multicopy_ref_tag_resolved_by_clone_id_or_left_unresolved(self):
         ref = fp.GenomePlacement((hit("Chr1", 1000, 1081), hit("Chr2", 5000, 5081)))
         resolved = fp.place_marker("Chr2_5040", ref, self.contigs, 81)
-        self.assertEqual((resolved.source, resolved.ref_tag_sites), ("ref_tag+clone_id", 2))
+        self.assertEqual((resolved.placed_by, resolved.ref_tag_site_count), ("ref_tag+clone_id", 2))
         self.assertEqual([site.contig for site in resolved.sites], ["Chr2"])
         unresolved = fp.place_marker("marker7", ref, self.contigs, 81)
-        self.assertEqual((unresolved.source, len(unresolved.sites)), ("ref_tag_multicopy", 2))
+        self.assertEqual((unresolved.placed_by, len(unresolved.sites)), ("ref_tag_multicopy", 2))
 
     def test_unaligned_ref_tag_falls_back_to_the_clone_id_window(self):
         fallback = fp.place_marker("Chr1_2000", fp.GenomePlacement(()), self.contigs, 81)
-        self.assertEqual((fallback.source, fallback.clone_check), ("clone_id", "fallback"))
+        self.assertEqual((fallback.placed_by, fallback.clone_id_check), ("clone_id", "fallback"))
         self.assertEqual(fallback.sites[0][:3], ("Chr1", 2000 - 1 - 81, 2000 + 81))
-        self.assertEqual(fp.place_marker("marker7", None, self.contigs, 81).source, "unplaced")
+        self.assertEqual(fp.place_marker("marker7", None, self.contigs, 81).placed_by, "unplaced")
 
     def test_clone_positions_can_be_ignored(self):
         def place(clone, *hits):
             return fp.place_marker(clone, fp.GenomePlacement(hits), self.contigs, 81, use_clone_position=False)
 
         unique = place("Chr2_1060", hit("Chr1", 1000, 1081))
-        self.assertEqual((unique.source, unique.clone_check), ("ref_tag", "ignored"))
+        self.assertEqual((unique.placed_by, unique.clone_id_check), ("ref_tag", "ignored"))
         tied = place("Chr2_5040", hit("Chr1", 1000, 1081), hit("Chr2", 5000, 5081))
-        self.assertEqual((tied.source, len(tied.sites)), ("ref_tag_multicopy", 2))  # no CloneID tie-break
+        self.assertEqual((tied.placed_by, len(tied.sites)), ("ref_tag_multicopy", 2))  # no CloneID tie-break
         unaligned = place("Chr1_2000")
-        self.assertEqual((unaligned.source, unaligned.sites, unaligned.clone_check), ("unplaced", (), "ignored"))
+        self.assertEqual((unaligned.placed_by, unaligned.sites, unaligned.clone_id_check), ("unplaced", (), "ignored"))
 
     def test_labels(self):
         marker = fp.place_marker("Chr1_1060", fp.GenomePlacement((hit("Chr1", 1000, 1081),)), self.contigs, 81)
 
         def label(*hits, site_score=None):
-            return fp.genome_label(fp.summarize_hits(hits), marker, site_score).label
+            return fp.genome_label(fp.distinct_sites(hits), marker, site_score).label
 
         self.assertEqual(label(hit("Chr1", 1000, 1081)), "on_target")
         self.assertEqual(label(hit("Chr1", 1004, 1081, score=150)), "on_target")  # clipped, same locus
@@ -213,25 +222,25 @@ class PlacementTests(unittest.TestCase):
         # A diverged allele the genome-wide search missed, scored by the site realignment.
         self.assertEqual(label(hit("Chr2", 7000, 7081, score=112), site_score=132), "on_target")
         self.assertEqual(label(hit("Chr2", 7000, 7081, score=132), site_score=112), "paralog")
-        result = fp.genome_label(fp.summarize_hits([hit("Chr2", 7000, 7081, score=112)]), marker, 132)
+        result = fp.genome_label(fp.distinct_sites([hit("Chr2", 7000, 7081, score=112)]), marker, 132)
         self.assertEqual((result.target_score, result.target_from, result.off_target_score), (132, "site", 112))
         unplaced = fp.place_marker("marker7", None, self.contigs, 81)
-        self.assertEqual(fp.genome_label(fp.summarize_hits([hit("Chr1", 0, 81)]), unplaced).label, "unplaced")
+        self.assertEqual(fp.genome_label(fp.distinct_sites([hit("Chr1", 0, 81)]), unplaced).label, "unplaced")
         multicopy = fp.place_marker(
             "marker7", fp.GenomePlacement((hit("Chr1", 1000, 1081), hit("Chr2", 5000, 5081))), self.contigs, 81
         )
-        self.assertEqual(fp.genome_label(fp.summarize_hits([hit("Chr1", 1000, 1081)]), multicopy).label, "ambiguous")
+        self.assertEqual(fp.genome_label(fp.distinct_sites([hit("Chr1", 1000, 1081)]), multicopy).label, "ambiguous")
 
     def test_target_score_is_the_better_of_both_searches(self):
         marker = fp.MarkerPlacement((hit("Chr1", 1000, 1081),), "ref_tag", 1, "agree")
         off = hit("Chr2", 7000, 7081, score=122)
-        weaker = fp.genome_label(fp.summarize_hits([hit("Chr1", 1010, 1081, score=112), off]), marker, 132)
-        absent = fp.genome_label(fp.summarize_hits([off]), marker, 132)
+        weaker = fp.genome_label(fp.distinct_sites([hit("Chr1", 1010, 1081, score=112), off]), marker, 132)
+        absent = fp.genome_label(fp.distinct_sites([off]), marker, 132)
         self.assertEqual(weaker, absent)  # a weaker genome-wide hit at the site changes nothing
         self.assertEqual((weaker.label, weaker.target_score, weaker.target_from), ("on_target", 132, "site"))
-        stronger = fp.genome_label(fp.summarize_hits([hit("Chr1", 1000, 1081, score=142), off]), marker, 132)
+        stronger = fp.genome_label(fp.distinct_sites([hit("Chr1", 1000, 1081, score=142), off]), marker, 132)
         self.assertEqual((stronger.label, stronger.target_score, stronger.target_from), ("on_target", 142, "genome"))
-        tied = fp.genome_label(fp.summarize_hits([hit("Chr1", 1000, 1081, score=132), off]), marker, 132)
+        tied = fp.genome_label(fp.distinct_sites([hit("Chr1", 1000, 1081, score=132), off]), marker, 132)
         self.assertEqual((tied.target_score, tied.target_from), (132, "genome"))
 
 
@@ -319,7 +328,10 @@ class FilterTests(unittest.TestCase):
         self.assertEqual(paralog["OffTargetHit"], "Chr2:7001-7081(+)")  # 1-based
         self.assertEqual(labels[self.ambiguous]["Label"], "ambiguous")
         diverged = labels[self.diverged]
-        self.assertEqual((diverged["Label"], diverged["TargetFrom"], diverged["TargetScore"]), ("on_target", "site", "132"))
+        self.assertEqual(
+            (diverged["Label"], diverged["TargetFrom"], diverged["TargetScore"]),
+            ("on_target", "site", "132"),
+        )
         self.assertEqual((labels[self.ref]["TargetFrom"], labels[self.ref]["OffTargetScore"]), ("genome", "."))
         markers = read_dicts(self.dir / "markers.csv")
         self.assertEqual(markers[0]["Placement"], "ref_tag")
@@ -528,7 +540,7 @@ class CountOverflowTests(unittest.TestCase):
                 madc_row("Chr1_001040", "Alt", mutate(tag, 40, "C"), [1, "n/a", 3]),
             ])
             outputs = [Path(temporary) / name for name in ("out.csv", "labels.csv", "markers.csv")]
-            with self.assertRaises(mp.MadcError):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(mp.MadcError):
                 fp.filter_paralogs(madc, outputs[0], FakeAligner({"Chr1": "A" * 2000}, {}), outputs[1], outputs[2])
             self.assertEqual([path.exists() for path in outputs], [False, False, False])
 
@@ -545,9 +557,10 @@ class CountOverflowTests(unittest.TestCase):
             self.assertEqual(parsed["samples"], SAMPLES)
             self.assertEqual(parsed["records"][0]["counts"], [10, 15, 25])
             aligner = FakeAligner({"Chr1": "A" * 2000}, {})
-            summary = fp.filter_paralogs(
-                madc, Path(temporary) / "out.csv", aligner, Path(temporary) / "l.csv", Path(temporary) / "m.csv"
-            )
+            with contextlib.redirect_stderr(io.StringIO()):
+                summary = fp.filter_paralogs(
+                    madc, Path(temporary) / "out.csv", aligner, Path(temporary) / "l.csv", Path(temporary) / "m.csv"
+                )
             self.assertEqual(summary["rows"]["input"], {"rows": 1, "reads": 50})
             self.assertEqual(read_rows(Path(temporary) / "out.csv"), read_rows(madc))
 
@@ -705,7 +718,10 @@ class GenomeAlignerTests(unittest.TestCase):
                 "--output", str(output), "--clone-positions", "ignore",
             ]))
         markers = {row["CloneID"]: row for row in read_dicts(output.with_suffix(".csv.genome_markers.csv"))}
-        self.assertEqual((markers["chr1_005541"]["Placement"], markers["chr1_005541"]["Sites"].count(";")), ("ref_tag_multicopy", 1))
+        self.assertEqual(
+            (markers["chr1_005541"]["Placement"], markers["chr1_005541"]["Sites"].count(";")),
+            ("ref_tag_multicopy", 1),
+        )
         self.assertEqual({row["CloneIDCheck"] for row in markers.values()}, {"ignored"})
         labels = {row["AlleleSequence"]: row["Label"] for row in read_dicts(output.with_suffix(".csv.genome_labels.csv"))}
         self.assertEqual(labels, {sequence: row["Label"] for sequence, row in self.labels.items()})
@@ -715,7 +731,7 @@ class GenomeAlignerTests(unittest.TestCase):
 
 @unittest.skipUnless(HAS_MAPPY, "mappy not installed (pip install 'madcats[genome]')")
 class ReviewCaseTests(unittest.TestCase):
-    """Counterexamples from an external review (docs/reviews), each on a tiny genome with the real aligner."""
+    """Counterexamples from an external review (docs/DEVELOPMENT.md, "Review fixes"), each on a tiny genome with the real aligner."""
 
     def setUp(self):
         self.rng = random.Random(34)
@@ -813,13 +829,13 @@ class ReviewCaseTests(unittest.TestCase):
             mappy.Aligner(str(fasta), preset="sr", fn_idx_out=str(parts[-1]))
         joined = self.dir / "joined.mmi"  # what minimap2 -I writes for a genome larger than its batch
         joined.write_bytes(parts[0].read_bytes() + parts[1].read_bytes())
-        self.assertEqual(fp._index_parts(parts[0]), [["chr1"]])
-        self.assertEqual(fp._index_parts(joined), [["chr1"], ["chr2"]])
-        self.assertIsNone(fp._index_parts(self.dir / "part1.fa"))
+        self.assertEqual(fp._index_part_contigs(parts[0]), [["chr1"]])
+        self.assertEqual(fp._index_part_contigs(joined), [["chr1"], ["chr2"]])
+        self.assertIsNone(fp._index_part_contigs(self.dir / "part1.fa"))
         truncated = self.dir / "truncated.mmi"
         truncated.write_bytes(parts[0].read_bytes()[:-5])
         with self.assertRaises(mp.MadcError):
-            fp._index_parts(truncated)
+            fp._index_part_contigs(truncated)
         madc = self.dir / "in.csv"
         write_madc(madc, [madc_row("chr1_000100", "Ref", self.dna(81), [1, 1, 1])])
         output = self.dir / "out.csv"
@@ -856,9 +872,9 @@ class ReviewCaseTests(unittest.TestCase):
         labels = []
         for name, copy in (("a", changed(ref, 20, 50)), ("b", allele)):
             aligner = self.aligner({"target": flanks[0] + ref + flanks[1], "copy": flanks[2] + copy + flanks[3]}, name)
-            ref_placement = fp.summarize_hits(aligner.hits(ref, aligner.new_buffer()), keep=None)
+            ref_placement = fp.distinct_sites(aligner.hits(ref, aligner.new_buffer()), max_sites=None)
             marker = fp.place_marker("marker", ref_placement, aligner.contigs, 81, use_clone_position=False)
-            labels.append(fp.genome_label(fp.summarize_hits(aligner.hits(allele, aligner.new_buffer())), marker).label)
+            labels.append(fp.genome_label(fp.distinct_sites(aligner.hits(allele, aligner.new_buffer())), marker).label)
         self.assertEqual(labels, ["on_target", "paralog"])
 
 

@@ -94,7 +94,7 @@ and the index file is 5.7 GB.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--paralogs {drop,flag}` | `drop` | `paralog` rows: drop them, or keep them labelled in the `GenomeLabel` column |
-| `--ambiguous {drop,flag,keep}` | `drop` | `ambiguous` rows: drop, keep labelled, or keep unlabelled |
+| `--ambiguous {drop,flag,keep}` | `drop` | `ambiguous` rows: drop, flag, or keep. A kept row still carries its label when `--paralogs flag` adds the `GenomeLabel` column |
 | `--qc-output <FILE>` | `OUTPUT.qc.json` | QC JSON |
 | `--jobs <INT>` | up to 4 | Alignment threads |
 
@@ -118,9 +118,9 @@ upload check, reject `GenomeLabel` in place of `PICRef`; give them the drop-mode
 | File | Contents |
 |------|----------|
 | `OUTPUT` | The cleaned MADC |
-| `OUTPUT.genome_labels.csv` | One line per input row, dropped rows included |
+| `OUTPUT.genome_labels.csv` | One line per haplotype row, dropped rows included. A row with an empty `AlleleID` is not a haplotype row; it is passed over and not written to `OUTPUT` either |
 | `OUTPUT.genome_markers.csv` | One line per marker: where it was placed and how |
-| `OUTPUT.qc.json` | Parameters, aligner settings, marker placement summary, rows and reads per label, per outcome and per allele category, and `count_overflow` (see below) |
+| `OUTPUT.qc.json` | Parameters, aligner settings, marker placement summary, the number of distinct haplotypes and sequences, haplotypes per label and how many were found again in the realignment at their marker's site, alignment time, rows and reads per label, per outcome and per allele category, and `count_overflow` (see below) |
 
 Read totals are summed as stored. If the input has negative counts, the command warns and
 `count_overflow` records how many cells and markers carry them. A negative count with a maximum of
@@ -140,7 +140,7 @@ settings are appended to it.
 | `TargetScore` | Best alignment score at the marker's site (`.` if none) |
 | `TargetFrom` | `genome` (the genome-wide search's hit at the site), `site` (the realignment to the marker's site, when it scored higher or the genome-wide search found nothing there) or `.` |
 | `OffTargetScore` | Best alignment score anywhere else (`.` if none) |
-| `OffTargetSites` | Distinct sites elsewhere at that score |
+| `OffTargetSites` | Distinct sites elsewhere at that score, among the 8 sites kept for a haplotype |
 | `OffTargetHit` | The best site elsewhere, 1-based: `Chr4:61708465-61708545(+)` |
 
 A perfect 81-base match scores 162 and each mismatch costs 10, so `TargetScore` and
@@ -242,8 +242,10 @@ It kept 113,667 rows, with 35.7% of the reads. See the
   haplotypes look like diverged alleles of the target. A second assembly that has the copy can
   show it (see [Using Another Assembly](#using-another-assembly)).
 - minimap2 finds fewer distant copies than bwa mem, so a haplotype far from every genome copy is
-  judged on the hits it has. Labels agreed with a bwa-mem classification for 98.2% of rows of a
-  MADCATS MADC and 94.9% of a vendor MADC, whose rows are more diverged.
+  judged on the hits it has. The rows kept or dropped agreed with a bwa-mem classification for
+  98.2% of rows of a MADCATS MADC and 94.9% of a vendor MADC, whose rows are more diverged. Those
+  figures count the canonical Ref and Alt rows, which are always kept; among the rows the filter
+  decides, they are 97.3% and 94.8%.
 - Only the tag is aligned (81 bases by default), not the full read.
 
 ## See Also

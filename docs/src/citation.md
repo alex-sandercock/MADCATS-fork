@@ -42,6 +42,17 @@ Gerard, D., Ferrão, L.F.V., Garcia, A.A.F., & Stephens, M. (2018). Genotyping
 polyploids from messy sequencing data. Genetics 210(3):789-807.
 ```
 
+If you clean a MADC with `madcats filter-paralogs`, please also cite minimap2, which does its
+alignments:
+
+```
+Li, H. (2018). Minimap2: pairwise alignment for nucleotide sequences.
+Bioinformatics 34(18):3094-3100. https://doi.org/10.1093/bioinformatics/bty191
+
+Li, H. (2021). New strategies to improve minimap2 alignment accuracy.
+Bioinformatics 37(23):4572-4574. https://doi.org/10.1093/bioinformatics/btab705
+```
+
 If you call genotypes with `madcats call`, please also cite the methods its model is adapted
 from: polyRAD for the likelihood and the Hardy-Weinberg prior, and updog for the allelic bias
 (`--allele-bias fit`) and the `norm` prior (`--prior norm`):
