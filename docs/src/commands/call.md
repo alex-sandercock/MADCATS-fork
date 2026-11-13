@@ -142,6 +142,14 @@ the probability that the whole genotype is right, not an estimate of it, which i
 called `GQ`. Every haplotype record is written this way, and so is an `all` record with three or
 more bases.
 
+Every copy of a sample's chromosomes is taken to be able to carry any allele (**autopolyploid**
+inheritance), so a hexaploid's dosage runs from 0 to 6. In an **allopolyploid** whose marker
+amplifies all subgenomes but varies on one, the dosage can only be 0 to 2 of 6, and `call` has no
+model for that. On the simulated allohexaploid of the polyRAD paper it got 82% of genotypes right
+with `hwe` and 87% with `norm`, where polyRAD, told the three subgenomes, did clearly better. A
+marker that amplifies one subgenome only is a diploid marker and is called correctly with
+`--ploidy 2`.
+
 ### Missing genotypes
 
 A genotype is written as missing (`./.`, with one dot per chromosome copy) when:
