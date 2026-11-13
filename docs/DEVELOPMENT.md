@@ -1570,12 +1570,15 @@ Only the parts needed for this were adapted. polyRAD's population-structure,
 linkage and mapping-population priors, its ploidy tests and its import and
 export code were not.
 
-Two parts of updog 2.1.7's model were added afterwards: the `norm` genotype
-prior and the allelic bias. Four parts are MADCATS's own and have no
-published counterpart: the maximum-likelihood estimate of the overdispersion,
-the table-wide background-read rate estimated with it, the free-weights
-prior that estimate uses, and the `structure` prior (the last paragraph of
-this section). The paragraphs below are in the order the work was
+Three parts of updog 2.1.7's model were added afterwards: the `norm` genotype
+prior, the allelic bias, and a prior with a free weight for every dosage
+(updog's `flex`), which `call` uses only while estimating the read model. Four
+parts are MADCATS's own and have no published counterpart: the
+maximum-likelihood estimate of the overdispersion, the table-wide
+background-read rate estimated with it, the search that fits the bias, and
+the `structure` prior. `madcats_call.py` names the polyRAD or updog function
+each of its functions follows and says where it differs ("Audit against both
+packages' sources" below). The paragraphs below are in the order the work was
 done, so the earlier tables were measured before the later parts existed. The
 figures for the finished model are under "Finished model on the alfalfa
 populations", "Tables from updog's and polyRAD's simulators" and "Time and
@@ -1773,6 +1776,21 @@ where the function has a single peak, and searches the edges of updog's
 parameter limits when the peak lies outside them; it takes 0.2 ms on average.
 On 130 sets of dosage weights no point of a fine grid fitted better.
 
+A Newton step that does not improve the fit is shortened by adding to the
+diagonal of the curvature (Levenberg-Marquardt). The first version halved the
+step instead, and stopped at its starting values when they put almost all of
+the prior on one dosage: the curvature there is next to nothing and the step
+is too long by tens of orders of magnitude. The audit found it in 1 of 40
+single fits (weights 0.0003, 0.27 and 14.0 on the dosages of a diploid, start
+at mean 1.98 and standard deviation 0.137), 0.39 below updog's optimum in mean
+log prior. On 2,954 fits with many near-zero weights and arbitrary starts the
+damped fit was never worse than the halved one and better in 337. Calls
+changed little: the potato comparison below is the same to the last digit
+(92.10% with `norm`, 96.57% with `norm` and the bias), and of twelve stored
+runs the three that use `norm` changed in 8 of 257,400 target and haplotype
+genotypes and in the off-target records of three markers, each with a higher
+penalised likelihood than before.
+
 `scripts/make_updog_fixture.R` stores updog 2.1.7 values in
 `tests/fixtures/updog_norm.json`. For 14 sets of weights (ploidies 2 to 8;
 one peak, rare and common alleles, two peaks, flat, a single class) the fitted
@@ -1850,7 +1868,12 @@ failed on two subpopulations and on inbred lines (point 2 above). With the
 `norm` shape, which cannot describe an excess of both homozygotes, it still
 failed on inbred and partly inbred tables. The estimate now gives every dosage
 its own probability at each marker (`PRIOR_FREE`: the summed posteriors,
-normalised), whatever `--prior` the run uses. Estimates without bias fitting,
+normalised), whatever `--prior` the run uses. This is the form of updog's
+`flex` model. updog's default is `norm`, and it suggests `norm` in place of
+`flex` when there are fewer than 10 × (ploidy + 1) samples, since `flex` has
+one free weight per dosage at every marker. Here it is used only for the
+estimate, which pools the markers, and never for the calls.
+Estimates without bias fitting,
 as overdispersion and background rate, on eight of the simulated tables
 described under "Tables from updog's and polyRAD's simulators":
 
@@ -2070,15 +2093,17 @@ one core.
 | Tool and settings | Cores | Wall | CPU | Peak memory |
 |---|---|---|---|---|
 | polyRAD 2.0.1, `IterateHWE` | 1 | 5 s | 5 s | 284 MB |
-| `call` with polyRAD's settings (nothing estimated) | 1 | 7 s | 7 s | 57 MB |
-| `call` with polyRAD's settings | 4 | 2 s | 7 s | 107 MB |
-| `call --prior hwe` (the defaults) | 1 | 33 s | 33 s | 57 MB |
-| `call --prior hwe` | 4 | 10 s | 34 s | 161 MB |
-| `call --prior norm` | 1 | 38 s | 38 s | 57 MB |
-| `call --prior norm` | 4 | 10 s | 38 s | 160 MB |
-| `call --prior hwe --allele-bias fit` | 4 | 72 s | 267 s | 182 MB |
-| `call --prior norm --allele-bias fit` | 1 | 301 s | 299 s | 63 MB |
-| `call --prior norm --allele-bias fit` | 4 | 80 s | 299 s | 182 MB |
+| `call` with polyRAD's settings (nothing estimated) | 1 | 6.5 s | 6 s | 56 MB |
+| `call` with polyRAD's settings | 4 | 2 s | 7 s | 109 MB |
+| `call --prior hwe` (the defaults) | 1 | 23 s | 22 s | 59 MB |
+| `call --prior hwe` | 4 | 6.5 s | 23 s | 159 MB |
+| `call --prior norm` | 1 | 24 s | 24 s | 58 MB |
+| `call --prior norm` | 4 | 7 s | 25 s | 159 MB |
+| `call --prior structure` | 1 | 30 s | 29 s | 67 MB |
+| `call --prior structure` | 4 | 9 s | 32 s | 204 MB |
+| `call --prior hwe --allele-bias fit` | 4 | 43 s | 160 s | 182 MB |
+| `call --prior norm --allele-bias fit` | 1 | 170 s | 168 s | 64 MB |
+| `call --prior norm --allele-bias fit` | 4 | 47 s | 170 s | 181 MB |
 | updog 2.1.7, `norm` | 1 | 1,115 s | 1,108 s | 281 MB |
 | updog 2.1.7, `norm` | 4 | 325 s | 1,128 s | 765 MB |
 
@@ -2089,23 +2114,42 @@ the two values given as numbers, so that nothing is estimated:
 
 | Settings, values given | Wall | Share of the full run |
 |---|---|---|
-| `--prior hwe` | 6 s | 6 of 33 s |
-| `--prior norm` | 10 s | 10 of 38 s |
-| `--prior norm --allele-bias fit` | 97 s | 97 of 301 s |
+| `--prior hwe` | 4.5 s | 4.5 of 23 s |
+| `--prior norm` | 7 s | 7 of 24 s |
+| `--prior norm --allele-bias fit` | 57 s | 57 of 170 s |
 
-- With polyRAD's settings `call` takes 7 s on one core where polyRAD takes
+- With polyRAD's settings `call` takes 6.5 s on one core where polyRAD takes
   5 s, in a fifth of the memory, and 2 s on four cores.
-- A default run spends 27 of its 33 s on the estimate. Calling alone takes 6 s
-  with `hwe` and 10 s with `norm`.
-- With the bias fitted the estimate takes about 200 s, since the bias of every
+- A default run spends 18 of its 23 s on the estimate. Calling alone takes
+  4.5 s with `hwe` and 7 s with `norm`.
+- With the bias fitted the estimate takes about 115 s, since the bias of every
   sampled marker is fitted again for each pair of values tried. Calling with
-  the bias takes 97 s, ten times as long as without.
-- The whole run with the bias is 3.7 times as fast as updog on one core and 4
+  the bias takes 57 s, eight times as long as without.
+- The whole run with the bias is 6.5 times as fast as updog on one core and 7
   times on four, with the accuracy shown above. Without the bias,
-  `call --prior norm` is 29 times as fast as updog on one core and 32 times on
+  `call --prior norm` is 46 times as fast as updog on one core and 45 times on
   four.
-- Four workers give 3.2 to 3.8 times the speed of one. Memory with four
-  workers is that of five Python processes, 110–180 MB.
+- Four workers give 3.1 to 3.6 times the speed of one. Memory with four
+  workers is that of five Python processes, 110–205 MB.
+
+The `call` rows were measured again after a review of the code for work done
+more than once; polyRAD's and updog's rows are from the first measurement.
+Before the review the default run took 33 s on one core and 10 s on four,
+`norm` 38 s and 10 s, and `norm` with the bias 301 s and 80 s; calling alone
+took 6 s, 10 s and 97 s. `call` with polyRAD's settings, whose code changed
+least, took 7 s then and 6.5 s now, so the two measurements are of comparable
+machines. Three changes account for the gain, and none changes a result (51
+output files of twelve runs were the same byte for byte before and after):
+
+- The likelihoods of a record's read counts are computed once and not in
+  every pass. They depend on the allele frequencies only through polyRAD's
+  contamination term, so they are computed in every pass only when
+  `--contamination-rate` is above 0.
+- The estimate chose its markers again for every background-read rate it
+  tried, and now chooses them once.
+- The binomial coefficient of a sample's counts and the terms that depend
+  only on the overdispersion tried are computed once per sample and once per
+  value, not once per dosage.
 
 **The structure prior (`--prior structure`).** polyRAD's `IteratePopStruct`
 gives each sample its own allele frequencies: it runs a principal component
@@ -2115,7 +2159,9 @@ would need a matrix library and would replace the marker-by-marker design
 with an iteration over the whole table. `call` instead finds, once, the
 samples most like each sample (`find_neighbours`) and then calls each record
 on its own with Hardy-Weinberg proportions at the allele frequency among a
-sample's neighbours (`_neighbour_passes`). Likeness is the sum of squared
+sample's neighbours: a second run of the record's iteration
+(`_iterate_record`), started from the result of the first. Likeness is the
+sum of squared
 differences between two samples' expected allele shares over the markers,
 from a first pass with the `hwe` prior, which ranks pairs as a genomic
 relationship matrix would. The number of neighbours (0, 5, 10, 20, 40 or 80)
@@ -2185,11 +2231,16 @@ offered (44.1% and 72.9% on the first table, against 72.3% for `hwe`),
 because each marker is then one of the features its own prediction is made
 from.
 
-On the benchmark table of "Time and memory" the structure prior took 34.6 s
-on one worker against 33.4 s for `hwe`, and 10.0 s against 8.6 s on four,
-with 199 MB against 160 MB; most of both is the read-model estimate. With the
-read model given, 500 markers and 300 samples took 4 to 5 s against 2 s on
-four workers.
+On the benchmark table of "Time and memory" the structure prior took 30 s on
+one worker against 23 s for `hwe`, and 9 s against 6.5 s on four, with 204 MB
+against 159 MB; 18 s of both is the read-model estimate. With the read model
+given it took 10.6 s against 4.0 s on one worker: the first pass over the
+markers that the samples are compared on, the comparison, and the second run
+of every record. (An earlier version of this paragraph gave 34.6 s against
+33.4 s for the whole run, which understated the difference: that code,
+measured again with the read model given, took 12.5 s against 5.1 s.) On the
+simulated tables, 500 markers and 300 samples, it took 4 to 5 s against 2 s
+on four workers with the read model given.
 
 Not tested for accuracy: ploidies other than four, samples of mixed ploidy,
 and read counts from other simulators. A run with diploid and tetraploid
@@ -2289,6 +2340,27 @@ A family prior costs 3 to 11 points on the samples that are not of the
 family, because it leaves them only the family's dosage classes, and gains
 at most 2.5 points on those that are.
 
+The same parent models were run on the alfalfa populations, with the parents
+named and polyRAD given the overdispersion `call` estimated. Agreement with
+the published dosages, which were themselves called by updog from the full
+depth; for polyRAD's mapping prior the share of genotypes it called is in
+brackets, and its agreement is among those:
+
+| Population | Mean depth | `call` hwe | `call` norm | `call` norm + bias | polyRAD `IterateHWE` | polyRAD mapping | updog `norm` | updog `f1` |
+|---|---|---|---|---|---|---|---|---|
+| I195 × J432 | 174 | 90.87% | 90.11% | 92.27% | 90.78% | 90.83% (92.7%) | 92.98% | 93.29% |
+| I195 × J432 | 25 | 84.53% | 84.08% | 85.77% | 84.44% | 85.12% (90.0%) | 86.26% | 86.61% |
+| I195 × J432 | 10 | 75.72% | 76.04% | 76.03% | 75.52% | 77.02% (87.5%) | 75.87% | 75.56% |
+| E115 × F628 | 424 | 90.04% | 89.80% | 92.00% | 89.93% | 90.42% (93.7%) | 92.68% | 93.06% |
+
+E115 × F628 at 25 and 10 reads was not run: the job reached its time limit
+after the four rows above. updog's `f1` model is 0.3 to 0.4 points above its
+`norm` at full depth and at 25 reads, and 0.3 below at 10. polyRAD's mapping
+prior is 0.05 to 1.5 points above its `IterateHWE` on the genotypes it calls
+and leaves 6 to 13% uncalled. `call` with `norm` and the bias is 0.5 to 0.7
+points below updog's `norm` at full depth and at 25 reads and level with it at
+10. The truth here favours updog, whose calls it is.
+
 **Priors on haplotype records.** Neither polyRAD's paper nor its package
 gives accuracy figures for multi-allele (haplotype) calls: the paper scores
 two-allele SNPs with array truth, and the package has import examples and
@@ -2335,6 +2407,68 @@ there are groups or families.
 
 Not covered: read counts from other simulators, real haplotype data with
 known genotypes, and hexaploids.
+
+**Off-target records (`--vcf all`).** The same eight tables give truth for
+the off-target records, which no earlier comparison scored: every haplotype
+other than Ref and Alt carries one substitution of its own, so the true
+dosage of a substitution is that of its haplotype. `call --vcf all` was run
+with its defaults, so the overdispersion and background rate were estimated
+(18 to 20 where 20 was simulated, and 30 on the tetraploid families at 8
+reads; 0.0002 to 0.001). Share of genotypes with reads called correctly, for
+target and off-target records, without filters; and for `hwe` with the
+default filters (`--min-dp 10`, `--min-gq 10`), the share of the off-target
+genotypes kept that are right and the share kept:
+
+| Ploidy | Population | Mean depth | Off-target records | hwe: target, off-target | structure: target, off-target | norm: target, off-target | hwe, default filters: right, kept |
+|---|---|---|---|---|---|---|---|
+| 4 | One population | 25 | 760 | 86.8%, 88.2% | 86.8%, 88.2% | 86.7%, 88.2% | 97.8%, 61% |
+| 4 | Three groups | 8 | 758 | 78.4%, 80.5% | 80.6%, 82.2% | 79.2%, 81.0% | 96.8%, 22% |
+| 4 | Three groups | 25 | 759 | 87.0%, 88.6% | 88.2%, 89.6% | 87.4%, 88.9% | 98.1%, 62% |
+| 4 | Three groups | 150 | 760 | 92.2%, 93.1% | 92.9%, 93.7% | 92.4%, 93.2% | 98.8%, 79% |
+| 4 | Families | 8 | 758 | 77.8%, 79.7% | 79.7%, 81.3% | 77.8%, 79.8% | 96.2%, 22% |
+| 4 | Families | 25 | 760 | 86.9%, 88.2% | 88.0%, 89.2% | 86.9%, 88.3% | 97.8%, 61% |
+| 2 | Three groups | 8 | 747 | 96.5%, 96.9% | 96.7%, 97.1% | 96.6%, 97.0% | 99.8%, 33% |
+| 2 | Families | 8 | 750 | 96.4%, 96.6% | 96.8%, 96.9% | 96.5%, 96.7% | 99.8%, 33% |
+
+- Off-target records are called as well as target records: 0.2 to 2.1 points
+  more of their genotypes are right. Their alternate alleles are a little
+  rarer in these tables (mean frequency 0.14 to 0.23, against 0.25 for the
+  target's).
+- The priors rank as they do on target records: `structure` gains up to 2.2
+  points on targets and 1.7 on off-target records where there are groups or
+  families and nothing with one population, and `norm` is within 0.1 points
+  below and 0.8 above `hwe`.
+- With the default filters 96 to 99.8% of the off-target genotypes kept are
+  right.
+
+Not covered: in these tables a substitution is on one haplotype only and
+never on the Alt tag. In real tags several haplotypes can share one, and
+their reads are then added together for its record; no table of that kind
+with truth has been scored. Real data with known off-target genotypes has not
+been tested either.
+
+**Audit against both packages' sources.** Every function of `madcats_call.py`
+was read against polyRAD 2.0.1's and updog 2.1.7's source and run against the
+packages on the same inputs, to settle what is adopted, what is adapted and
+what is MADCATS's own. The module's opening comment and the functions'
+comments now say so, with the full references.
+
+| Compared | Result |
+|---|---|
+| Six simulated records (ploidy 2, 4, 6 and mixed; 2 to 4 alleles; one with selfing) against `IterateHWE` | likelihoods, posteriors, frequencies and corrected genotypes agree to 1e-13 |
+| 366 random corrections of dosages to the ploidy against `CorrectGenos` | 366 the same |
+| The same where no step has any probability | `call` gives no call; polyRAD returned all-zero dosages in 33 cases and did not return in one |
+| Ties between dosages | `BestGenos` compares in single precision and takes the first: posteriors 0.4, 0.4, 0.2 give dosage 0 in polyRAD and no call in `call` |
+| Prior on the bias, bias formula at error rate 0, limits of `norm` | identical to updog's `pen_bias`, `xi_fun` and bounds |
+| 40 single `norm` fits against updog's | 39 agree to 4e-5; the fortieth is the stalled fit described under "The norm prior", since fixed |
+
+Three statements were wrong and are corrected: this record listed the
+free-weights prior as MADCATS's own (it is updog's `flex`; only its use for
+the estimate is new), the command's description said "The model is
+polyRAD's", and a comment described the frequency floor of 1 / (2 × samples)
+as polyRAD's for a diploid population (polyRAD divides by the largest locus
+ploidy it is given, which is 2 in the stored comparisons, whatever the
+samples' ploidy).
 
 **Other checks.** On the bundled example all 96 target and 96 haplotype
 genotypes equal the simulated truth. `bcftools view` reads the three VCF types
@@ -2507,3 +2641,19 @@ PanelHub:
 The sweetpotato panel publication gives the same classification definitions
 and states that DArT supplies the MADC from its pipeline:
 <https://pmc.ncbi.nlm.nih.gov/articles/PMC11354173/>.
+
+The genotype model of `call` is adapted from polyRAD and updog (see "Genotype
+calling" for which part comes from where):
+
+- Clark LV, Lipka AE, Sacks EJ (2019) polyRAD: genotype calling with
+  uncertainty from sequencing data in polyploids and diploids. G3
+  9(3):663-673. <https://doi.org/10.1534/g3.118.200913>
+- Gerard D, Ferrão LFV, Garcia AAF, Stephens M (2018) Genotyping polyploids
+  from messy sequencing data. Genetics 210(3):789-807.
+  <https://doi.org/10.1534/genetics.118.301468>
+- Gerard D, Ferrão LFV (2020) Priors for genotyping polyploids.
+  Bioinformatics 36(6):1795-1800.
+  <https://doi.org/10.1093/bioinformatics/btz852>
+- de Silva HN, Hall AJ, Rikkerink E, McNeilage MA, Fraser LG (2005)
+  Estimation of allele frequencies in polyploids under certain patterns of
+  inheritance. Heredity 95:327-334. <https://doi.org/10.1038/sj.hdy.6800728>

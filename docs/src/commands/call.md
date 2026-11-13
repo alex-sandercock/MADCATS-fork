@@ -270,9 +270,9 @@ towards 0 with a normal prior of standard deviation 0.7, starts from updog's fiv
 settings equal, the fitted bias and the genotypes match updog's.
 
 - The bias is found by calling the record at a series of bias values, 17 or more. On 1,000 alfalfa
-  markers and 186 samples, calling took ten times as long on one worker (97 s against 10 s), and
+  markers and 186 samples, calling took eight times as long on one worker (57 s against 7 s), and
   the estimate of the overdispersion and background rate, which fits the bias for every pair of
-  values it tries, about 200 s against 28 s. The whole run, 301 s, was still 3.7 times as fast as
+  values it tries, about 115 s against 17 s. The whole run, 170 s, was still 6.5 times as fast as
   updog. The estimate does not grow with the table, and giving `--overdispersion` and
   `--background-rate` as numbers skips it.
 - It is applied to the sample's own allele copies, and background reads are added afterwards.
@@ -363,7 +363,10 @@ read, which ends a few bases away from where the Ref tag ends.
 
 In the `all` VCF, the three record kinds come from the same reads, so agreement between them is a
 check on consistency, not independent evidence. Off-target insertions and deletions are not
-written as records yet.
+written as records yet. On simulated microhaplotype tables (diploid and tetraploid, 8 to 150
+reads) off-target records were called as accurately as target records, and 96 to 99.8% of the
+off-target genotypes that passed the default filters were right; real data with known off-target
+genotypes has not been tested.
 
 ## See Also
 
