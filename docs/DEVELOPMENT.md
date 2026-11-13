@@ -1631,20 +1631,33 @@ hexaploid table simulated with 20 (and 25 for a diploid table simulated with
 allele copy, and in polyploids that estimate is wrong often enough to make the
 counts look more scattered than they are. The port was dropped. The
 maximum-likelihood estimate, on 200 simulated markers and 150 samples per
-case, with the simulated value in the first column:
+case (20–150 reads unless stated, no stray reads), with the simulated value in
+the first column. The table is from the estimate as it now stands, with free
+weights for the dosages and the background-read rate estimated alongside
+(both described further down):
 
 | Simulated | 2x | 4x | 6x | mixed 2x/4x/6x | 4x, 8–40 reads | 4x F1 | 6x F1 | 2x inbred |
 |---|---|---|---|---|---|---|---|---|
-| 5 | 5 | 5 | 5 | 5 | 5 | 6 | 7 | 2 |
-| 10 | 10 | 10 | 10 | 10 | 10 | 12 | 14 | 2 |
-| 20 | 20 | 20 | 20 | 18 | 20 | 25 | 30 | 2 |
-| 50 | 50 | 50 | 50 | 50 | 50 | 50 | 75 | 2 |
+| 5 | 5 | 6 | 8 | 6 | 6 | 5 | 7 | 2 |
+| 10 | 10 | 10 | 10 | 10 | 10 | 10 | 10 | 2 |
+| 20 | 20 | 20 | 20 | 20 | 20 | 20 | 20 | 2 |
+| 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 2 |
 | none (binomial) | 500 | 500 | 500 | 500 | 500 | 500 | 500 | 2 |
 
-Inbred lines have no heterozygotes to measure scatter from and do not fit the
-Hardy-Weinberg weights, so the estimate ends at the lowest value; `call` then
-warns and uses 9. On the two real alfalfa F1 populations below it chose 40 and
-50.
+From 10 upward every value is recovered. The first version of the estimate,
+which assumed Hardy-Weinberg proportions, read 12–30 for the F1 columns at
+10 and 20, and 75 for the hexaploid F1 at 50. At a simulated 5, scatter wider
+than anything seen in the real tables, polyploid estimates are 6 to 8,
+because part of the scatter is taken for background reads. The
+background-read rate came out at the lowest value tried, 0.0002, in 36 of the
+40 cases, and at 0.001 to 0.01 in the other four: random-mating tetraploids
+and hexaploids at 5, and the low-depth tetraploids at 5 and 10.
+
+The inbred diploids here have no heterozygotes and no stray reads, so there is
+no scatter to measure and the estimate ends at the lowest value; `call` then
+warns and uses 9. On the two real alfalfa F1 populations below the first
+version chose 40 and 50, and the finished one 30 and 40 with a background-read
+rate of 0.003.
 
 **Real alfalfa DArTag data (tetraploid, 3K panel).** Three processed MADCs
 were called as tetraploids with the `call` model and with polyRAD 2.0.1
