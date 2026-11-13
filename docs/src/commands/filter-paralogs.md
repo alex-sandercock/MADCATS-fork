@@ -302,7 +302,7 @@ It kept 113,667 rows, with 35.7% of the reads. See the
 - **Alfalfa, without the design genome.** On the other cultivar's genome with
   `--clone-positions ignore`, 97.8% of the markers with 81-base tags and 91.0% of those with
   54-base tags were placed where their 361-base design sequence lies, 0.5 to 0.9% in another
-  copy, and the rest left unplaced; and more rows were labelled `paralog` or `ambiguous` (7.6%
+  copy, and the rest left unplaced; and more rows were labelled `paralog` or `ambiguous` (7.5%
   of the larger family's rows against 3.9% on the design genome).
 - Output does not depend on `--jobs`.
 
