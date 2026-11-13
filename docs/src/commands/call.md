@@ -105,6 +105,21 @@ in the QC JSON.
   that approach and a relationship-matrix predictor were tried in its place and were no better
   (see the development record).
 
+All four priors apply to every VCF type. For the haplotype VCF, on simulated microhaplotype tables
+(3 to 6 alleles per marker, diploid and tetraploid; one population, groups and families):
+
+- `hwe` gave the same share of correct genotypes as polyRAD's HWE prior, to within 0.4 points.
+- `structure` was never below `hwe` and gained 1 to 4 points in tetraploids with groups or
+  families.
+- `norm` was never below `hwe`, gained at most 1.7 points, and took two to five times as long.
+- `uniform` was the lowest throughout, by 1 to 6 points.
+- With the default `--min-marginal-posterior`, 94 to 99% of the genotypes kept were right under
+  `hwe`, `norm` and `structure` alike.
+
+These are simulations with one simulator; there is no published accuracy baseline for haplotype
+calls to compare with, and no real haplotype data with known genotypes has been tested. The
+allelic bias is never fitted for haplotype records.
+
 For inbred lines and partly selfing species, `--selfing-rate` adjusts the Hardy-Weinberg prior: a
 share of each generation comes from self-fertilisation, which moves prior probability from the
 intermediate dosages to the two homozygous ones (the equilibrium proportions of de Silva et al.

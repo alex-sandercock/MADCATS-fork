@@ -2242,6 +2242,100 @@ better than a parent's own reads would give. That needs a pedigree, which is
 often not available, and is not built. A single biparental population gains
 under a point from an F1 prior, so that is not built either.
 
+The biparental case was also simulated, with the parent models of the other
+two tools: polyRAD's `PipelineMapping2Parents` (F1, no linkage, given the
+overdispersion `call` estimated) and updog's `f1` model with both parents
+named, against updog's `norm`. Tetraploid, 200 progeny and both parents, 300
+markers; genotypes and reads from polyRAD's simulators (`SimGenotypesMapping`
+and `SimAlleleDepth`, overdispersion 20, no bias) or updog's (`rgeno` and
+`rflexdog`, sequencing error 0.5%, overdispersion 49–499 and a bias of
+exp(N(0, 0.5)) per marker). The parents were sequenced like the progeny.
+Share of the progeny's genotypes called correctly:
+
+| Reads from | Mean depth | `call` hwe | `call` norm | `call` norm + bias | F1 prior on `call`'s likelihood | polyRAD mapping | updog `norm` | updog `f1` |
+|---|---|---|---|---|---|---|---|---|
+| polyRAD | 8 | 74.9% | 77.1% | | 77.5% | 77.3% | 74.0% | 75.4% |
+| polyRAD | 25 | 84.5% | 85.7% | | 86.0% | 85.8% | 80.6% | 82.3% |
+| polyRAD | 150 | 90.3% | 91.2% | | 91.3% | 91.2% | 88.9% | 89.5% |
+| updog | 8 | 69.3% | 70.1% | 75.3% | 70.3% | 70.6% | 75.5% | 74.4% |
+| updog | 25 | 79.4% | 79.1% | 87.8% | 80.1% | 80.0% | 87.6% | 87.6% |
+| updog | 150 | 85.2% | 84.5% | 97.1% | 85.5% | 84.9% | 97.1% | 97.3% |
+
+On unbiased reads the `norm` prior is within 0.4 points of the F1 prior and
+of polyRAD's mapping prior: it fits the narrow spread of one family's
+dosages. On biased reads `call` with `norm` and the bias fitted is within 0.3
+points of updog's `norm` and `f1` at 25 and 150 reads. The structure prior
+gave the same shares as `hwe` on all six tables. polyRAD's mapping prior left
+13–16% of the genotypes of the biased tables uncalled.
+
+With 10% of the progeny replaced by unrelated samples (25 reads), true
+progeny and off-types apart:
+
+| Reads from | Caller | True progeny | Off-types |
+|---|---|---|---|
+| polyRAD | `call` hwe | 84.6% | 81.3% |
+| polyRAD | `call` norm | 85.8% | 79.4% |
+| polyRAD | F1 prior on `call`'s likelihood | 86.2% | 76.2% |
+| polyRAD | polyRAD `IterateHWE` | 84.4% | 81.4% |
+| polyRAD | polyRAD mapping | 86.1% | 70.8% |
+| polyRAD | updog `norm` | 79.9% | 78.9% |
+| polyRAD | updog `f1` | 82.4% | 75.6% |
+| updog | `call` norm + bias | 87.6% | 82.0% |
+| updog | updog `norm` | 87.6% | 82.6% |
+| updog | updog `f1` | 87.3% | 79.0% |
+| updog | polyRAD mapping | 78.1% | 65.6% |
+
+A family prior costs 3 to 11 points on the samples that are not of the
+family, because it leaves them only the family's dosage classes, and gains
+0 to 2.5 points on those that are.
+
+**Priors on haplotype records.** Neither polyRAD's paper nor its package
+gives accuracy figures for multi-allele (haplotype) calls: the paper scores
+two-allele SNPs with array truth, and the package has import examples and
+small demonstration datasets without expected genotypes. On polyRAD's own
+DArTag example (`inst/extdata/DArTag_example.csv`, two markers with three and
+five haplotypes, four tetraploid samples) `call --vcf haplotype` with
+polyRAD's settings gives polyRAD's genotype for all eight sample-by-marker
+genotypes.
+
+Accuracy was measured on microhaplotype tables from polyRAD's simulators
+(`SimGenotypes`, `SimGenotypesMapping`, `SimAlleleDepth`; overdispersion 20,
+contamination and error rates 0.001): 300 markers of 3 to 6 alleles, 300
+samples, as one population, three groups (FST 0.15) or fifteen full-sib
+families of 20. polyRAD was given the overdispersion, and `call` that and a
+background rate of 0.001. Share of genotypes with reads in which the dosage
+of every allele is right, without filters:
+
+| Ploidy | Population | Mean depth | polyRAD `IterateHWE` | polyRAD `IteratePopStruct` | `call` hwe | `call` norm | `call` structure | `call` uniform |
+|---|---|---|---|---|---|---|---|---|
+| 4 | One population | 25 | 75.0% | stopped with an error | 74.6% | 74.6% | 74.6% (0 neighbours) | 70.9% |
+| 4 | Three groups | 8 | 55.2% | 58.9% | 55.1% | 56.8% | 59.3% | 53.6% |
+| 4 | Three groups | 25 | 75.1% | 77.0% | 75.0% | 75.5% | 77.0% | 73.5% |
+| 4 | Three groups | 150 | 85.8% | 86.8% | 85.7% | 85.8% | 86.7% | 84.5% |
+| 4 | Families | 8 | 54.7% | 56.8% | 54.7% | 54.8% | 58.6% | 48.5% |
+| 4 | Families | 25 | 75.0% | 76.8% | 74.6% | 74.9% | 77.1% | 71.0% |
+| 2 | Three groups | 8 | 92.5% | 93.0% | 92.6% | 92.7% | 93.0% | 92.2% |
+| 2 | Families | 8 | 91.8% | 92.3% | 91.8% | 92.1% | 92.6% | 90.9% |
+
+- `hwe` is within 0.4 points of polyRAD's HWE prior, as it should be.
+- `structure` is never below `hwe` and gains 1 to 4 points in tetraploids
+  with groups or families; it is within 0.1 points of `IteratePopStruct` or
+  above it on every table, by 1.8 points on the low-depth families. With one
+  population it chooses 0 neighbours.
+- `norm` is never below `hwe` and gains at most 1.7 points. It takes two to
+  five times as long, and 2 and 11 of the 300 records of the two low-depth
+  tetraploid tables reached the iteration limit.
+- `uniform` is the lowest on every table, by 1 to 6 points.
+
+With the default filter (`--min-marginal-posterior 0.9`), 94 to 99% of the
+genotypes kept are right under each of `hwe`, `norm` and `structure`. The
+share kept at this overdispersion is 4 to 37% in tetraploids and 74 to 83% in
+diploids, and is 2 to 8 points higher with `structure` than with `hwe` where
+there are groups or families.
+
+Not covered: read counts from other simulators, real haplotype data with
+known genotypes, and hexaploids.
+
 **Other checks.** On the bundled example all 96 target and 96 haplotype
 genotypes equal the simulated truth. `bcftools view` reads the three VCF types
 without warnings, including mixed-ploidy output. Output is identical for any
