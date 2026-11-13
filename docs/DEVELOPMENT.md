@@ -2963,6 +2963,48 @@ reads called correctly, as in the table above:
   rank as before, and with the default filters 96 to 99.8% of the genotypes
   kept are right.
 
+**Hexaploid microhaplotype tables.** The haplotype and off-target tables
+above are diploid and tetraploid. Five hexaploid tables were drawn with the
+same simulator (300 samples, 300 markers of three to six haplotypes,
+overdispersion 20) and scored the same three ways. A haplotype genotype is
+right when the dosage of every allele is right:
+
+| Population, mean depth | polyRAD `IterateHWE` | polyRAD `IteratePopStruct` | `call` hwe | `call` norm | `call` structure |
+|---|---|---|---|---|---|
+| One population, 25 | 47.4% | 44.7% | 47.3% | 47.1% | 47.3% |
+| Three groups, 8 | 31.0% | 37.5% | 30.9% | 34.5% | 37.8% |
+| Three groups, 25 | 49.2% | 53.5% | 49.1% | 51.0% | 53.6% |
+| Three groups, 150 | 62.5% | 65.6% | 62.6% | 63.6% | 65.7% |
+| Families, 25 | 47.3% | 49.1% | 47.2% | 47.4% | 51.2% |
+
+Target and off-target records of `--vcf all`, share of genotypes right
+without filters, with one haplotype per substitution and with substitutions
+shared by haplotypes; and for `hwe` with the default filters, the share of
+the target and off-target genotypes kept that are right and the share kept:
+
+| Population, mean depth | hwe: target, off-target | structure | norm | Shared: hwe | Shared: structure | Shared: norm | hwe, default filters: right, kept | Shared, default filters |
+|---|---|---|---|---|---|---|---|---|
+| One population, 25 | 74.2%, 76.0% | 74.2%, 76.0% | 74.1%, 75.9% | 67.4%, 71.3% | 67.4%, 71.3% | 67.3%, 71.2% | 96.3%, 36%; 96.0%, 39% | 95.8%, 22%; 95.8%, 29% |
+| Three groups, 8 | 65.7%, 68.4% | 69.1%, 71.3% | 66.8%, 69.3% | 57.7%, 62.9% | 62.5%, 66.6% | 59.4%, 64.2% | 95.0%, 14%; 94.7%, 16% | 94.2%, 8%; 94.4%, 12% |
+| Three groups, 25 | 74.8%, 77.2% | 77.3%, 79.4% | 75.8%, 78.0% | 68.8%, 72.9% | 71.9%, 75.6% | 70.0%, 73.9% | 97.1%, 40%; 97.1%, 44% | 96.5%, 28%; 96.7%, 36% |
+| Three groups, 150 | 81.2%, 83.3% | 83.0%, 84.8% | 81.8%, 83.8% | 76.7%, 80.0% | 78.9%, 81.8% | 77.5%, 80.6% | 98.5%, 55%; 98.6%, 60% | 98.2%, 44%; 98.4%, 52% |
+| Families, 25 | 74.2%, 76.1% | 76.0%, 77.9% | 74.2%, 76.1% | 67.3%, 71.4% | 69.9%, 73.6% | 67.4%, 71.4% | 96.0%, 37%; 96.0%, 40% | 95.2%, 24%; 95.5%, 31% |
+
+- In hexaploids the priors rank as in tetraploids. `call` with the HWE prior
+  has polyRAD's share to 0.1 points on every table, and `structure` equals or
+  passes polyRAD's population-structure model (by 2.1 points for families).
+  Where there is one population polyRAD's structure model loses 2.7 points to
+  its own HWE model and `structure` loses nothing, because it found no
+  neighbours worth using.
+- Fewer genotypes are right than in tetraploids at the same depth (74% of
+  target genotypes at 25 reads against 87%), as seven dosage classes leave
+  less room between neighbours than five. With the default filters 94 to
+  98.6% of the genotypes kept are right, and fewer are kept: 36 to 44% at 25
+  reads against 61%.
+- At 8 reads the overdispersion was estimated at 100 and at 50 where 20 was
+  simulated; from 25 reads on the estimate is 20. At that depth hexaploid
+  counts hold too little to tell scatter from dosage.
+
 Real off-target genotypes are tested in the delta smelt comparison below.
 
 **The polyRAD paper's own benchmark.** Clark et al. (2019) tested polyRAD on
