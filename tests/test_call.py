@@ -233,6 +233,18 @@ class NormalPriorTests(unittest.TestCase):
         self.assertAlmostEqual(again[0], start[0], places=7)
         self.assertAlmostEqual(again[1], start[1], places=7)
 
+    def test_fit_leaves_a_start_that_is_almost_entirely_on_one_dosage(self):
+        # 2% of the samples have dosage 1.  Each start puts next to nothing there, so the
+        # fit has almost no curvature to work with at its first step.  The prior's two
+        # parameters can match three dosages exactly, so the best fit reproduces the shares.
+        weights = [0.0003, 0.27, 14.0]
+        shares = [weight / sum(weights) for weight in weights]
+        for start_mean, start_sd in ((1.98, 0.137), (2.0, 0.05), (0.0, 0.1), (3.0, 0.2)):
+            with self.subTest(start_mean=start_mean, start_sd=start_sd):
+                mean, standard_deviation = call.fit_normal_prior(weights, 2, start_mean, start_sd)
+                for probability, share in zip(call.normal_prior(2, mean, standard_deviation), shares):
+                    self.assertAlmostEqual(probability, share, places=6)
+
 
 class NormalPriorMarkerTests(unittest.TestCase):
     def test_inbred_tetraploids_keep_their_homozygous_calls(self):

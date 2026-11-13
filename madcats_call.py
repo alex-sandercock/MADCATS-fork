@@ -629,6 +629,13 @@ def _golden_section_maximum(function, low: float, high: float, tolerance: float 
     return (low + high) / 2.0
 
 
+# Range of the amount added to the curvature when a Newton step of the normal-shaped prior's
+# fit overshoots.  The curvature itself is at most a few hundred (the variance of a squared
+# dosage), so the largest amount leaves a step too short to change the fit.
+NEWTON_MIN_DAMPING = 1e-12
+NEWTON_MAX_DAMPING = 1e8
+
+
 def _normal_prior_newton_fit(shares: Sequence[float], ploidy: int, mean: float, standard_deviation: float):
     """Fit the normal-shaped prior without limits on its parameters, by Newton's method.
 
@@ -640,8 +647,15 @@ def _normal_prior_newton_fit(shares: Sequence[float], ploidy: int, mean: float, 
     the prior's mean dosage and mean squared dosage equal those of
     ``shares``.  Returns ``(a, b)``, or None when the iteration does not
     settle (the shares sit on one or two dosages and the peak is at infinity).
-    A step that cannot improve the fit any further, to within rounding, means
-    the peak has been reached.
+
+    A Newton step that does not improve the fit is shortened by adding to the
+    diagonal of the curvature (the Levenberg-Marquardt method): the more is
+    added, the shorter the step and the nearer its direction to the
+    gradient's.  A start whose prior is almost entirely on one dosage has
+    next to no curvature, and its plain Newton step is too long by many
+    orders of magnitude; halving such a step does not rescue it.  When no
+    amount added improves the fit, to within rounding, the peak has been
+    reached.
     """
     dosages = range(ploidy + 1)
     target_first = sum(share * dosage for share, dosage in zip(shares, dosages))
@@ -666,20 +680,20 @@ def _normal_prior_newton_fit(shares: Sequence[float], ploidy: int, mean: float, 
         variance_first = moments[1] - moments[0] ** 2
         variance_second = moments[3] - moments[1] ** 2
         covariance = moments[2] - moments[0] * moments[1]
-        determinant = variance_first * variance_second - covariance**2
-        if determinant <= 1e-300:
-            return None
-        step_linear = (variance_second * gradient_first - covariance * gradient_second) / determinant
-        step_quadratic = (variance_first * gradient_second - covariance * gradient_first) / determinant
-        scale = 1.0
-        while scale > 1e-8:
-            candidate = prior_and_objective(linear + scale * step_linear, quadratic + scale * step_quadratic)
-            if candidate[1] >= objective:
-                break
-            scale /= 2.0
+        damping = 0.0
+        while damping <= NEWTON_MAX_DAMPING:
+            damped_first, damped_second = variance_first + damping, variance_second + damping
+            determinant = damped_first * damped_second - covariance**2
+            if determinant > 1e-300:
+                step_linear = (damped_second * gradient_first - covariance * gradient_second) / determinant
+                step_quadratic = (damped_first * gradient_second - covariance * gradient_first) / determinant
+                candidate = prior_and_objective(linear + step_linear, quadratic + step_quadratic)
+                if candidate[1] >= objective:
+                    break
+            damping = max(NEWTON_MIN_DAMPING, 10.0 * damping)
         else:
             return linear, quadratic
-        linear, quadratic = linear + scale * step_linear, quadratic + scale * step_quadratic
+        linear, quadratic = linear + step_linear, quadratic + step_quadratic
         improvement = candidate[1] - objective
         prior, objective = candidate
         if improvement < 1e-14:
