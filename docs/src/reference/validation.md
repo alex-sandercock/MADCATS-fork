@@ -129,7 +129,7 @@ against data with known or independent genotypes. The tables are in the developm
   of the same reads; polyRAD and updog on the same counts agree less often.
 - **Polyploids with known dosages from real reads.** Tetraploids and hexaploids pooled from the
   smelt diploids, at full depth and thinned to 50, 25 and 10 reads: `call` is level with updog at
-  full depth (98.3% of tetraploid and 97.0% of hexaploid target genotypes right) and ahead of it
+  full depth (98.3% of tetraploid and 96.9% of hexaploid target genotypes right) and ahead of it
   once reads are thinned, by 1 to 4 points for tetraploids and 6 to 10 for hexaploids.
 - **Hexaploid replicates.** On ten samples of each of eight sweetpotato clones, with the read
   counts the study's updog run used, two samples of a clone get the same dosage in 86.7% of
