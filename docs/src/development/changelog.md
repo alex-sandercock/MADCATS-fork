@@ -19,7 +19,9 @@ Notable changes by version. Measurements behind each change are in the
   calls with it. With the other settings equal, the fitted bias is within 0.1% of updog 2.1.7's and
   the genotypes are the same, on stored reference values. On two tetraploid alfalfa populations it
   raised agreement with published dosages from 90.9% and 90.0% to 92.2% and 91.8% (updog: 93.0% and
-  92.7%). The VCF gains `INFO/BIAS`, and `PREFIX.bias.csv` lists each fit.
+  92.7%). Against SNP-array genotypes of 85 tetraploid potato clones it raised the share of matching
+  dosages from 92.3% to 96.6% (updog: 96.7%). The VCF gains `INFO/BIAS`, and `PREFIX.bias.csv`
+  lists each fit.
 - `call` estimates a background-read rate (`--background-rate auto`, the default) together with
   the overdispersion: the share of reads that show an allele they did not come from. It replaces
   polyRAD's contamination rate, which is now 0 unless set, because contamination cannot account for

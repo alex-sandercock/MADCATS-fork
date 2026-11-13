@@ -227,14 +227,18 @@ settings equal, the fitted bias and the genotypes match updog's.
   the QC JSON and marked in the bias table; such a marker is usually not behaving as one locus.
 - The VCF carries the bias as `INFO/BIAS`, and `PREFIX.bias.csv` lists every fitted record.
 
-When to fit it, from read counts drawn with updog's and polyRAD's own simulators and from two
-tetraploid alfalfa populations (the tables are in the development record):
+When to fit it, from read counts drawn with updog's and polyRAD's own simulators, two tetraploid
+alfalfa populations and 85 tetraploid potato clones that also have SNP-array genotypes (the tables
+are in the development record):
 
 - Use it with `--prior norm`. With `--prior hwe` it lost accuracy wherever the samples were not in
   Hardy-Weinberg proportions (families, inbred lines).
 - On biased polyploid data it brought `call` level with updog (within 0.7 points of genotypes
   correct on seven updog-simulated tables), where calling without it was 8 to 20 points behind. On
   the alfalfa populations it raised agreement with published dosages from 90% to 92%.
+- Against the potato array genotypes, which do not come from a read-count caller, it raised the
+  share of matching dosages from 92.3% to 96.6%, where updog reached 96.7%. At the markers updog
+  found biased the share rose from 80% to 95%.
 - On outbred tetraploid data without bias it cost up to 1.5 points.
 - Do not fit it for inbred lines. Without heterozygous samples a bias cannot be told from a shift
   of every dosage, and 8 points were lost.

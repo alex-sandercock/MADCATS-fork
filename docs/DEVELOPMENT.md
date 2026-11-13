@@ -1930,6 +1930,55 @@ of the published dosage. The published dosages probably come from updog
 have a bias outside 0.8–1.25 and 26% and 27% outside 0.67–1.5 (median 1.0),
 and 3% end at a limit of the search.
 
+**Potato DArTag against SNP-array genotypes.** The alfalfa dosages above
+probably come from updog, so they cannot say whether updog or `call` is nearer
+the truth. The potato data of Endelman et al. (2024, The Plant Genome,
+doi:10.1002/tpg2.20484) have genotypes from a second technology. The
+polyBreedR repository (`inst/vignette_data`) carries the part of that dataset
+from a five-parent half-diallel: 85 tetraploid clones in ten F1 families, with
+DArTag read counts (`diallel_DArTag.vcf.gz`, the `AD` field) and Infinium
+array genotypes called with fitPoly (`diallel_array.vcf.gz`). The two files
+share 1,544 markers with the same REF and ALT; the median depth is 304 reads
+per sample and marker. The VCF has no tag sequences, so `call` was given the
+reference and alternate counts as a two-row-per-marker MADC with stand-in
+sequences. Most probable dosage against the array dosage, without filters,
+over the 131,224 genotypes with reads:
+
+| Caller | Same dosage | RMSE | Markers with under 10% wrong | Bias 0.8–1.25 (1,135 markers) | Bias outside (409) |
+|---|---|---|---|---|---|
+| `call` with polyRAD's settings | 87.92% | 0.353 | 905 | 91.9% | 76.9% |
+| polyRAD `IterateHWE`, overdispersion 9 | 87.92% | 0.353 | 905 | 91.9% | 76.9% |
+| polyRAD `IteratePopStruct`, overdispersion 9 | 90.53% | 0.314 | 1,095 | 94.5% | 79.5% |
+| `call --prior hwe` (the defaults) | 92.26% | 0.290 | 1,199 | 96.7% | 79.9% |
+| `call --prior norm` | 92.10% | 0.294 | 1,191 | 96.7% | 79.4% |
+| `call --prior hwe --allele-bias fit` | 96.60% | 0.192 | 1,396 | 97.1% | 95.2% |
+| `call --prior norm --allele-bias fit` | 96.57% | 0.192 | 1,394 | 97.1% | 95.2% |
+| updog `norm` on the same 85 samples | 96.69% | 0.188 | 1,403 | 97.2% | 95.4% |
+| updog `norm` as stored in the VCF (fitted on 703 samples) | 96.86% | 0.181 | 1,399 | 97.3% | 95.7% |
+
+The last two columns split the markers by the bias updog stored in the VCF.
+Every row has 99.8–99.9% of calls within one copy.
+
+- `call` with polyRAD's settings and polyRAD give the same share to two
+  decimals, as on the alfalfa data.
+- The estimated read model (overdispersion 75, background rate 0.003) is
+  worth 4.3 points over polyRAD's defaults.
+- Fitting the bias is worth another 4.3 points, 15 at the 409 markers updog
+  found biased. The estimate with the bias fitted is 300 and 0.001, and 31% of
+  the fitted biases are outside 0.8–1.25.
+- With the bias fitted, `call` is 0.1 points below updog on the same samples
+  and took 52–56 s on four workers against updog's 150 s (CPU 197–214 s
+  against 394 s; memory 150 MB against 693 MB). Without the bias it took 6–7 s.
+- polyRAD's population-structure prior adds 2.6 points at an overdispersion
+  of 9, where the prior carries more weight, and still ends below `call` with
+  the HWE prior and estimated values. With an overdispersion of 75 polyRAD's
+  HWE prior gives 92.41%, leaving 210 genotypes uncalled, and its structure
+  prior stops with an error (a regression with no usable cases).
+
+The whole deposit (703 and 375 samples, with a MADC for the second panel
+version) is on Dryad, doi:10.5061/dryad.8pk0p2nw4, whose files need a Dryad
+account to download through the API.
+
 **Tables from updog's and polyRAD's simulators.** To have truth that does not
 come from MADCATS code, read counts were also drawn with the simulators the
 two packages ship (`rgeno` and `rflexdog` in updog; `SimGenotypes` and
