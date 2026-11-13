@@ -2191,10 +2191,11 @@ with 199 MB against 160 MB; most of both is the read-model estimate. With the
 read model given, 500 markers and 300 samples took 4 to 5 s against 2 s on
 four workers.
 
-Not tested: samples of mixed ploidy, ploidies other than four apart from the
-potato clones being tetraploid too, and other simulators. The prior is not
-combined with the allelic bias or the selfing rate; `call` refuses both
-combinations.
+Not tested for accuracy: ploidies other than four, samples of mixed ploidy,
+and read counts from other simulators. A run with diploid and tetraploid
+samples and all three VCF types completes, and `bcftools view` reads its
+output. The prior is not combined with the allelic bias or the selfing rate;
+`call` refuses both combinations.
 
 **Other checks.** On the bundled example all 96 target and 96 haplotype
 genotypes equal the simulated truth. `bcftools view` reads the three VCF types
