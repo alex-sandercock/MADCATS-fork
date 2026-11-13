@@ -138,6 +138,16 @@ class HitScoreTests(unittest.TestCase):
         variant = fp.distinct_sites([hit("chr1", 500, 581, score=152), hit("chr1", 580, 661, score=152)])
         self.assertEqual(fp.genome_label(variant, marker).label, "ambiguous")
 
+    def test_a_position_within_two_tandem_copies_picks_neither(self):
+        # The CloneID position lies in both adjacent copies, so it cannot choose between them, and
+        # every equal-best site stays the marker's, the copy on another contig included.
+        ref = fp.distinct_sites([hit("chr1", 500, 581), hit("chr1", 580, 661), hit("chr2", 100, 181)], max_sites=None)
+        marker = fp.place_marker("chr1_581", ref, {"chr1", "chr2"}, 81)
+        self.assertEqual(
+            (marker.placed_by, marker.clone_id_check, marker.ref_tag_site_count, marker.sites),
+            ("ref_tag_multicopy", "agree", 3, ref.sites),
+        )
+
 
 class PlacementTests(unittest.TestCase):
     contigs = {"Chr1", "Chr2", "scaffold_12"}
@@ -452,6 +462,40 @@ class FilterTests(unittest.TestCase):
         output, summary = self.run_filter(madc)  # drop mode works on the short layout
         self.assertEqual(summary["rows"]["output"], {"rows": 1, "reads": 6})
 
+    def test_rows_without_an_allele_id_are_passed_over(self):
+        madc = self.dir / "in.csv"
+        blank = list(self.rows[2])
+        blank[0] = ""
+        write_madc(madc, [self.rows[0], blank, self.rows[1], ["note"]])
+        output, summary = self.run_filter(madc)
+        self.assertEqual(read_rows(output)[1:], [self.rows[0], self.rows[1]])
+        self.assertEqual(summary["rows"]["input"]["rows"], 2)
+        self.assertEqual(len(read_dicts(self.dir / "labels.csv")), 2)
+
+    def test_ambiguous_rows_can_be_flagged_while_paralogs_are_dropped(self):
+        madc = self.dir / "in.csv"
+        write_madc(madc, self.rows)
+        output, summary = self.run_filter(madc, ambiguous_action="flag")
+        rows = read_rows(output)
+        column = rows[0].index(fp.GENOME_LABEL_COLUMN)
+        self.assertEqual(
+            [row[column] for row in rows[1:]], ["on_target", "on_target", "ambiguous", "on_target", "on_target"]
+        )
+        self.assertEqual(summary["rows"]["by_outcome"]["flagged"]["rows"], 1)
+        self.assertEqual(summary["rows"]["by_outcome"]["dropped"]["rows"], 1)
+
+    def test_warnings_for_disagreeing_positions_and_for_no_placed_marker(self):
+        madc = self.dir / "in.csv"
+        # The CloneID names a position 5,000 bases from where the Ref tag aligns.
+        rows = [madc_row("Chr2_005000", category, sequence, counts) for category, sequence, counts in self.specs[:2]]
+        write_madc(madc, rows)
+        with contextlib.redirect_stderr(io.StringIO()) as log:
+            summary = fp.filter_paralogs(madc, self.dir / "o.csv", self.aligner, self.dir / "l.csv", self.dir / "m.csv")
+        self.assertEqual(summary["markers"]["clone_id_check"], {"disagree": 1})
+        self.assertIn("CloneID positions disagree with the Ref tag's best genome sites for 1 of 1 markers", log.getvalue())
+        self.assertIn("no marker could be placed on the genome; every row was kept", log.getvalue())
+        self.assertEqual(summary["rows"]["output"]["rows"], 2)
+
     def test_clone_position_from_another_assembly(self):
         # The Ref tag does not align, and the CloneID names Chr2:500, where this genome has no copy of the
         # locus (as when CloneIDs carry another assembly's coordinates).  Used, that position becomes the
@@ -579,6 +623,34 @@ class CommandTests(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
                 mp.main(["filter-paralogs", "--madc", str(madc), "--output", str(Path(temporary) / "out.csv")])
         self.assertEqual(caught.exception.code, 2)
+
+    def test_missing_madc_and_output_over_the_input_are_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            madc = Path(temporary) / "in.csv"
+            arguments = ["filter-paralogs", "--genome", str(Path(temporary) / "genome.fa")]
+            with self.assertRaises(mp.MadcError) as caught:
+                fp.run_filter_paralogs(mp.build_parser().parse_args(
+                    arguments + ["--madc", str(madc), "--output", str(Path(temporary) / "out.csv")]
+                ))
+            self.assertIn("MADC not found", str(caught.exception))
+            madc.write_text("AlleleID,CloneID,AlleleSequence\n")
+            with self.assertRaises(mp.MadcError) as caught:
+                fp.run_filter_paralogs(mp.build_parser().parse_args(
+                    arguments + ["--madc", str(madc), "--output", str(madc)]
+                ))
+            self.assertIn("must be a new file", str(caught.exception))
+
+    def test_madc_is_checked_before_the_genome_is_opened(self):
+        # A MADC without a header row is refused although the genome file does not exist.
+        with tempfile.TemporaryDirectory() as temporary:
+            madc = Path(temporary) / "in.csv"
+            madc.write_text("not,a,madc\n1,2,3\n")
+            with self.assertRaises(mp.MadcError) as caught:
+                fp.run_filter_paralogs(mp.build_parser().parse_args([
+                    "filter-paralogs", "--madc", str(madc), "--genome", str(Path(temporary) / "absent.fa"),
+                    "--output", str(Path(temporary) / "out.csv"),
+                ]))
+            self.assertIn("header row", str(caught.exception))
 
     def test_script_run_shares_madc_error_with_the_filter_module(self):
         # python3 madcats.py runs the file as __main__; an error raised in madcats_paralogs must still
@@ -727,6 +799,108 @@ class GenomeAlignerTests(unittest.TestCase):
         self.assertEqual(labels, {sequence: row["Label"] for sequence, row in self.labels.items()})
         qc = json.loads(output.with_suffix(".csv.qc.json").read_text())
         self.assertEqual(qc["parameters"]["clone_positions"], "ignore")
+
+
+@unittest.skipUnless(HAS_MAPPY, "mappy not installed (pip install 'madcats[genome]')")
+class PlantedCopyTests(unittest.TestCase):
+    """Markers on one contig of a random genome, each with a diverged copy of its tag on another.
+
+    The copies differ from the Ref tag at 1, 2, 4 or 8 bases, or at 1 base
+    and a 2-base deletion; four markers of each kind.  Every marker has its
+    Ref and Alt rows, an allele of its own with one more substitution, and
+    two rows that come from the copy: the copy's tag, and that tag with one
+    more substitution.
+    """
+
+    KINDS = (("1", 1, 0), ("2", 2, 0), ("4", 4, 0), ("8", 8, 0), ("1_and_deletion", 1, 2))
+
+    @classmethod
+    def setUpClass(cls):
+        rng = random.Random(23)
+        home = [rng.choice("ACGT") for _ in range(30000)]
+        elsewhere = [rng.choice("ACGT") for _ in range(30000)]
+
+        def other(base):
+            return rng.choice([choice for choice in "ACGT" if choice != base])
+
+        def substituted(sequence, positions):
+            for position in positions:
+                sequence = mutate(sequence, position, other(sequence[position]))
+            return sequence
+
+        rows, cls.truth = [], {}
+        position = 1000
+        for kind, substitutions, deleted in cls.KINDS:
+            for _ in range(4):
+                clone = f"home_{position + 41:06d}"
+                region = "".join(home[position - 100 : position + 181])     # the tag and 100 bases either side
+                ref = region[100:181]
+                changed_at = sorted(rng.sample(range(25, 70), substitutions))
+                copy_region = substituted(region, [100 + offset for offset in changed_at])
+                if deleted:
+                    cut = rng.choice([offset for offset in range(30, 60) if offset not in changed_at])
+                    copy_region = copy_region[: 100 + cut] + copy_region[100 + cut + deleted :]
+                elsewhere[position : position + len(copy_region)] = copy_region
+                copy_tag = copy_region[100:181]
+                own_allele = substituted(ref, [72])
+                copy_variant = substituted(copy_tag, [74])
+                for category, sequence, origin in (
+                    ("Ref", ref, "home"), ("Alt", substituted(ref, [40]), "home"), ("RefMatch_1", own_allele, "home"),
+                    ("RefMatch_2", copy_tag, "copy"), ("RefMatch_3", copy_variant, "copy"),
+                ):
+                    rows.append(madc_row(clone, category, sequence, [8, 4, 0]))
+                    cls.truth[(clone, sequence)] = (kind, origin)
+                position += 1400
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.dir = Path(cls.temporary.name)
+        cls.genome = cls.dir / "genome.fa"
+        cls.genome.write_text(f">home\n{''.join(home)}\n>elsewhere\n{''.join(elsewhere)}\n")
+        cls.madc = cls.dir / "in_MADC.csv"
+        write_madc(cls.madc, rows)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temporary.cleanup()
+
+    def filtered(self, name, madc=None, *options):
+        output = self.dir / f"{name}.csv"
+        with contextlib.redirect_stderr(io.StringIO()):
+            fp.run_filter_paralogs(mp.build_parser().parse_args([
+                "filter-paralogs", "--madc", str(madc or self.madc), "--genome", str(self.genome),
+                "--genome-index", str(self.dir / "genome.mmi"), "--output", str(output), *options,
+            ]))
+        return output
+
+    def test_copy_rows_are_paralogs_and_home_rows_are_on_target(self):
+        output = self.filtered("default")
+        labels = read_dicts(output.with_suffix(".csv.genome_labels.csv"))
+        self.assertEqual(len(labels), 100)
+        for row in labels:
+            kind, origin = self.truth[(row["CloneID"], row["AlleleSequence"])]
+            with self.subTest(kind=kind, allele=row["AlleleID"]):
+                self.assertEqual(row["Label"], "paralog" if origin == "copy" else "on_target")
+                self.assertEqual(row["Action"], "dropped" if origin == "copy" else "kept")
+        self.assertEqual(len(read_rows(output)), 1 + 60)
+        markers = read_dicts(output.with_suffix(".csv.genome_markers.csv"))
+        self.assertEqual(Counter(row["Placement"] for row in markers), {"ref_tag": 20})
+
+    def test_output_does_not_depend_on_the_number_of_threads(self):
+        one = self.filtered("one_thread", None, "--jobs", "1")
+        three = self.filtered("three_threads", None, "--jobs", "3")
+        for suffix in (".csv", ".csv.genome_labels.csv", ".csv.genome_markers.csv"):
+            self.assertEqual(one.with_suffix(suffix).read_bytes(), three.with_suffix(suffix).read_bytes())
+
+    def test_gzipped_madc_and_named_qc_file(self):
+        import gzip
+
+        zipped = self.dir / "in_MADC.csv.gz"
+        zipped.write_bytes(gzip.compress(self.madc.read_bytes()))
+        qc_path = self.dir / "named.qc.json"
+        output = self.filtered("from_gzip", zipped, "--qc-output", str(qc_path))
+        plain = self.filtered("from_plain")
+        self.assertEqual(output.read_bytes(), plain.read_bytes())
+        self.assertEqual(json.loads(qc_path.read_text())["rows"]["by_label"]["paralog"]["rows"], 40)
+        self.assertFalse(output.with_suffix(".csv.qc.json").exists())
 
 
 @unittest.skipUnless(HAS_MAPPY, "mappy not installed (pip install 'madcats[genome]')")
