@@ -1571,10 +1571,11 @@ linkage and mapping-population priors, its ploidy tests and its import and
 export code were not.
 
 Two parts of updog 2.1.7's model were added afterwards: the `norm` genotype
-prior and the allelic bias. Three parts are MADCATS's own and have no
+prior and the allelic bias. Four parts are MADCATS's own and have no
 published counterpart: the maximum-likelihood estimate of the overdispersion,
-the table-wide background-read rate estimated with it, and the free-weights
-prior that estimate uses. The paragraphs below are in the order the work was
+the table-wide background-read rate estimated with it, the free-weights
+prior that estimate uses, and the `structure` prior (the last paragraph of
+this section). The paragraphs below are in the order the work was
 done, so the earlier tables were measured before the later parts existed. The
 figures for the finished model are under "Finished model on the alfalfa
 populations", "Tables from updog's and polyRAD's simulators" and "Time and
@@ -2105,6 +2106,95 @@ the two values given as numbers, so that nothing is estimated:
   four.
 - Four workers give 3.2 to 3.8 times the speed of one. Memory with four
   workers is that of five Python processes, 110–180 MB.
+
+**The structure prior (`--prior structure`).** polyRAD's `IteratePopStruct`
+gives each sample its own allele frequencies: it runs a principal component
+analysis of the genotype estimates of all markers, regresses every allele on
+the components, and repeats both with the calling until they settle. A port
+would need a matrix library and would replace the marker-by-marker design
+with an iteration over the whole table. `call` instead finds, once, the
+samples most like each sample (`find_neighbours`) and then calls each record
+on its own with Hardy-Weinberg proportions at the allele frequency among a
+sample's neighbours (`_neighbour_passes`). Likeness is the sum of squared
+differences between two samples' expected allele shares over the markers,
+from a first pass with the `hwe` prior, which ranks pairs as a genomic
+relationship matrix would. The number of neighbours (0, 5, 10, 20, 40 or 80)
+is the one whose neighbours, found on one half of the markers, best predict
+the samples' shares at the other half; 0 is the `hwe` prior.
+
+Test tables: tetraploids, 300 samples, 500 markers, read counts from
+polyRAD's `SimAlleleDepth` (overdispersion 20, contamination and error rates
+0.001), negative-binomial depths of mean 8, 25 or 150. The populations are
+three groups of 100 with Balding-Nichols allele frequencies at three values
+of FST; a cline in which every sample is a different mixture of two sources
+(FST 0.3 between them); fifteen full-sib families of twenty; and one
+random-mating population. The last two rows are the 85 potato clones above
+with every read kept with probability 10/366 or 25/366, scored against the
+array genotypes. polyRAD was given the simulated overdispersion (75 for the
+potato rows) and `call` that value and a background rate of 0.001 (0.003).
+Share of genotypes with reads whose most probable dosage is the true one:
+
+| Population | Mean depth | polyRAD `IterateHWE` | polyRAD `IteratePopStruct` | `call` hwe | `call` structure | Neighbours chosen |
+|---|---|---|---|---|---|---|
+| Three groups, FST 0.05 | 8 | 71.2% | 71.3% | 71.1% | 71.9% | 80 |
+| Three groups, FST 0.15 | 8 | 72.3% | 74.7% | 72.3% | 75.1% | 80 |
+| Three groups, FST 0.15 | 25 | 83.2% | 84.6% | 83.4% | 84.8% | 80 |
+| Three groups, FST 0.15 | 150 | 89.5% | 90.3% | 89.7% | 90.5% | 80 |
+| Three groups, FST 0.30 | 8 | 73.9% | 79.0% | 73.9% | 79.4% | 80 |
+| Three groups, FST 0.30 | 25 | 84.7% | 87.0% | 84.8% | 87.3% | 80 |
+| Cline | 8 | 75.4% | 76.7% | 75.4% | 76.7% | 80 |
+| Cline | 25 | 85.1% | 85.7% | 85.3% | 85.8% | 80 |
+| Fifteen families | 8 | 70.8% | 73.1% | 70.8% | 73.8% | 20 |
+| Fifteen families | 25 | 81.9% | 83.4% | 82.0% | 83.9% | 20 |
+| One population | 8 | 70.5% | 67.1% | 70.5% | 70.5% | 0 |
+| Potato families, thinned | 10 | 71.0% | 71.1% | 70.9% | 71.8% | 10 |
+| Potato families, thinned | 25 | 80.8% | 81.4% | 80.7% | 81.4% | 10 |
+
+- The structure prior calls as many genotypes correctly as `IteratePopStruct`
+  on every table or more, by up to 0.7 points. The cline is the case
+  principal components describe best, and the two are level there.
+- On the six tables with three groups it equals what calling each group on
+  its own with the `hwe` prior gives (72.0%, 75.1%, 84.8%, 90.5%, 79.4% and
+  87.3%), which is the most a prior can gain from knowing the groups.
+- With one population `IteratePopStruct` kept 51 components and lost 3.4
+  points. The structure prior chose 0 neighbours.
+- The gain over `hwe` falls with depth: 0.8 to 5.5 points at 8 reads, 0.5 to
+  2.5 at 25, and 0.8 at 150. At full depth the potato clones go from 92.3% to
+  92.3% (10 neighbours), and the two alfalfa populations from 90.87% and
+  90.04% agreement with the published dosages to 90.89% and 89.98% (20
+  neighbours each).
+- With the read model estimated instead of given, three of the tables that
+  were run again gave the same shares (79.4%, 73.8% and 71.8%).
+
+Three ways of using the same relationships were compared on a test bench
+with one likelihood and one first pass (not in the repository; it used
+numpy): the nearest samples, as above; principal components, their number
+chosen on held-out markers; and a ridge predictor from the whole relationship
+matrix, its shrinkage chosen the same way. On the group and cline tables the
+three were within 0.3 points of each other. On the families the nearest
+samples gave 73.8% and 83.9%, the components 73.1% and 83.8%, and the ridge
+predictor 72.7% and 83.4%. On the thinned potato counts the ridge predictor
+failed (33.9% and 56.0%, with the least shrinkage offered), and the other two
+were level (71.9% and 81.3% against 71.7% and 81.4%). A sample's own value
+was left out of its own prediction in all three.
+
+The number of neighbours, components or the shrinkage has to be chosen on
+markers that took no part in measuring the relationships. Chosen on the same
+markers, the bench took the least shrinkage and the most components it was
+offered (44.1% and 72.9% on the first table, against 72.3% for `hwe`),
+because each marker is then one of the features its own prediction is made
+from.
+
+On the benchmark table of "Time and memory" the structure prior took 34.6 s
+on one worker against 33.4 s for `hwe`, and 10.0 s against 8.6 s on four,
+with 199 MB against 160 MB; most of both is the read-model estimate. With the
+read model given, 500 markers and 300 samples took 4 to 5 s against 2 s on
+four workers.
+
+Not tested: samples of mixed ploidy, ploidies other than four apart from the
+potato clones being tetraploid too, and other simulators. The prior is not
+combined with the allelic bias or the selfing rate; `call` refuses both
+combinations.
 
 **Other checks.** On the bundled example all 96 target and 96 haplotype
 genotypes equal the simulated truth. `bcftools view` reads the three VCF types

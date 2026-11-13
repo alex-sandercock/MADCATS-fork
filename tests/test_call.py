@@ -7,6 +7,7 @@ scripts/make_updog_fixture.R), so they run without R.
 
 import contextlib
 import csv
+import dataclasses
 import io
 import itertools
 import json
@@ -592,6 +593,142 @@ class OverdispersionEstimateTests(unittest.TestCase):
     def test_marker_subset_is_limited_and_evenly_spaced(self):
         self.assertEqual(call._evenly_spaced(list(range(10)), 20), list(range(10)))
         self.assertEqual(call._evenly_spaced(list(range(10)), 5), [0, 2, 4, 6, 8])
+
+
+def simulated_group_markers(groups, samples_per_group, markers, ploidy=4, depth=(8, 16), overdispersion=50, seed=5):
+    """Read counts and true alternate dosages for samples from several groups.
+
+    Returns ``[marker][sample][allele]`` counts and ``[marker][sample]``
+    dosages; the samples of a group are next to each other.  At every marker
+    each group has its own allele frequency, up to 0.35 away from the
+    marker's base frequency, and its samples are drawn at random-mating
+    proportions for it.  The seed is fixed, so the counts are the same on
+    every run.
+    """
+    generator = random.Random(seed)
+    table, truth = [], []
+    for _ in range(markers):
+        base = generator.uniform(0.2, 0.8)
+        depths, dosages = [], []
+        for _ in range(groups):
+            frequency = min(0.98, max(0.02, base + generator.uniform(-0.35, 0.35)))
+            for _ in range(samples_per_group):
+                dosage = sum(generator.random() < frequency for _ in range(ploidy))
+                read_fraction = dosage / ploidy
+                if 0 < read_fraction < 1:
+                    read_fraction = generator.betavariate(
+                        read_fraction * overdispersion, (1 - read_fraction) * overdispersion
+                    )
+                marker_depth = generator.randint(*depth)
+                alternate_depth = sum(generator.random() < read_fraction for _ in range(marker_depth))
+                depths.append([marker_depth - alternate_depth, alternate_depth])
+                dosages.append(dosage)
+        table.append(depths)
+        truth.append(dosages)
+    return table, truth
+
+
+class StructurePriorTests(unittest.TestCase):
+    """The structure prior: each sample's allele frequency comes from the samples most like it."""
+
+    settings = call.ModelSettings(
+        prior=call.PRIOR_STRUCTURE, overdispersion=50, contamination_rate=0.0, background_rate=0.001
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.table, cls.truth = simulated_group_markers(groups=3, samples_per_group=20, markers=120)
+        cls.ploidies = [4] * 60
+        cls.choice = call.find_neighbours(cls.table, cls.ploidies, cls.settings)
+
+    def test_neighbours_come_from_the_sample_s_own_group(self):
+        choice = self.choice
+        self.assertIn(choice.count, (10, 20))
+        self.assertIsNone(choice.reason)
+        self.assertEqual(choice.markers_used, 120)
+        self.assertEqual(sorted(choice.error_by_count), [0, 5, 10, 20, 40])
+        self.assertLess(choice.error_by_count[choice.count], choice.error_by_count[0])
+        own_group = total = 0
+        for sample, sample_neighbours in enumerate(choice.neighbours):
+            self.assertEqual(len(sample_neighbours), choice.count)
+            self.assertNotIn(sample, sample_neighbours)
+            # A group has 19 other samples, so only the nearest 10 can all be from it.
+            for other in sample_neighbours[:10]:
+                total += 1
+                own_group += other // 20 == sample // 20
+        self.assertGreater(own_group / total, 0.95)
+
+    def test_more_dosages_are_called_correctly_than_with_hwe(self):
+        def share_correct(settings):
+            right = total = 0
+            for depths, dosages in zip(self.table, self.truth):
+                result = call.call_marker(depths, self.ploidies, settings)
+                for sample_posteriors, dosage in zip(result.posteriors, dosages):
+                    total += 1
+                    right += call.most_probable_dosage(sample_posteriors[1]) == dosage
+            return right / total
+
+        with_neighbours = dataclasses.replace(self.settings, neighbours=self.choice.neighbours)
+        hwe = dataclasses.replace(self.settings, prior=call.PRIOR_HWE)
+        # 81.6% against 79.9% on this table.
+        self.assertGreater(share_correct(with_neighbours), share_correct(hwe) + 0.01)
+
+    def test_one_population_gets_no_neighbours_and_the_hwe_result(self):
+        table = simulated_two_allele_markers(50, 4, markers=120, samples=40)
+        ploidies = [4] * 40
+        choice = call.find_neighbours(table, ploidies, self.settings)
+        self.assertEqual(choice.count, 0)
+        self.assertIn("no better than the whole table", choice.reason)
+        self.assertEqual(choice.neighbours, tuple(() for _ in ploidies))
+        without = call.call_marker(table[0], ploidies, dataclasses.replace(self.settings, neighbours=choice.neighbours))
+        hwe = call.call_marker(table[0], ploidies, dataclasses.replace(self.settings, prior=call.PRIOR_HWE))
+        self.assertEqual(without.posteriors, hwe.posteriors)
+        self.assertEqual(without.sample_frequencies, [])
+
+    def test_a_table_too_small_to_compare_samples_gets_no_neighbours(self):
+        few_samples = call.find_neighbours([depths[:10] for depths in self.table], [4] * 10, self.settings)
+        self.assertEqual((few_samples.count, few_samples.reason), (0, "fewer than 20 samples"))
+        few_markers = call.find_neighbours(self.table[:30], self.ploidies, self.settings)
+        self.assertEqual((few_markers.count, few_markers.reason), (0, "fewer than 100 markers with reads"))
+        self.assertEqual(few_markers.markers_used, 30)
+
+    def test_a_sample_s_prior_follows_its_neighbours(self):
+        # Samples 0 and 1 have the same reads; the neighbours of 0 carry the alternate allele
+        # and those of 1 do not.
+        depths = [[3, 1], [3, 1], [0, 12], [0, 14], [1, 11], [13, 0], [12, 0], [14, 1]]
+        neighbours = ((2, 3, 4), (5, 6, 7), (0, 3, 4), (0, 2, 4), (0, 2, 3), (1, 6, 7), (1, 5, 7), (1, 5, 6))
+        settings = dataclasses.replace(self.settings, neighbours=neighbours)
+        result = call.call_marker(depths, [2] * 8, settings)
+        self.assertTrue(result.converged)
+        self.assertGreater(result.sample_frequencies[0][1], 0.7)
+        self.assertLess(result.sample_frequencies[1][1], 0.2)
+        self.assertGreater(result.posteriors[0][1][1], result.posteriors[1][1][1])
+        self.assertLess(result.posteriors[0][1][0], result.posteriors[1][1][0])
+        for sample, sample_neighbours in enumerate(neighbours):
+            # The frequency is the neighbours' mean share with the record's frequency as one more.
+            shares = [call.posterior_mean_dosage(result.posteriors[other][1]) / 2 for other in sample_neighbours]
+            expected = (sum(shares) + result.allele_frequencies[1]) / 4
+            self.assertAlmostEqual(result.sample_frequencies[sample][1], expected, delta=1e-3)
+            self.assertAlmostEqual(sum(result.sample_frequencies[sample]), 1.0, places=12)
+            for value, mirrored in zip(result.posteriors[sample][0], reversed(result.posteriors[sample][1])):
+                self.assertAlmostEqual(value, mirrored, places=12)
+
+    def test_records_with_more_than_two_alleles(self):
+        depths = [[6, 2, 0], [5, 3, 1], [0, 7, 2], [1, 6, 3], [8, 0, 0], [7, 1, 0]]
+        neighbours = ((1, 4, 5), (0, 4, 5), (3, 1), (2, 1), (0, 5), (0, 4))
+        result = call.call_marker(depths, [4] * 6, dataclasses.replace(self.settings, neighbours=neighbours))
+        self.assertEqual([len(of_sample) for of_sample in result.sample_frequencies], [3] * 6)
+        for sample_posteriors in result.posteriors:
+            self.assertEqual(len(sample_posteriors), 3)
+            for posterior in sample_posteriors:
+                self.assertAlmostEqual(sum(posterior), 1.0, places=12)
+
+    def test_settings_are_checked(self):
+        with self.assertRaisesRegex(ValueError, "allelic bias"):
+            call.ModelSettings(prior=call.PRIOR_STRUCTURE, fit_allele_bias=True)
+        settings = dataclasses.replace(self.settings, neighbours=((1,), (0,)))
+        with self.assertRaisesRegex(ValueError, "one entry per sample"):
+            call.call_marker([[4, 4], [5, 3], [2, 6]], [2] * 3, settings)
 
 
 class PolyradParityTests(unittest.TestCase):
@@ -1188,6 +1325,53 @@ class CommandBehaviourTests(CommandTestCase):
         # Inbred tetraploids are called homozygous, never as an intermediate dosage.
         called = {sample["GT"] for record in records for sample in record["samples"][2:]}
         self.assertLessEqual(called, {"0/0/0/0", "1/1/1/1", "./././."})
+
+    def test_structure_prior_uses_the_samples_most_like_each_sample(self):
+        table, _ = simulated_group_markers(groups=3, samples_per_group=20, markers=120)
+        madc = self.madc_from_simulation(table)
+        options = ["--ploidy", "4", "--overdispersion", "50", "--background-rate", "0.001", "--min-dp", "0"]
+        prefix = self.call(madc, "--prior", "structure", *options)
+        report = self.qc["structure_prior"]
+        self.assertIn(report["neighbours_per_sample"], (10, 20))
+        self.assertEqual(report["markers_compared"], 120)
+        self.assertIsNone(report["reason_none_used"])
+        self.assertIn(f"the {report['neighbours_per_sample']} samples most like it", self.stderr)
+        header, _, records = self.vcf(prefix, "target")
+        model_line = next(line for line in header if line.startswith("##madcatsModel="))
+        self.assertIn(f"the {report['neighbours_per_sample']} samples most like it", model_line)
+        structure_genotypes = [sample["GT"] for record in records for sample in record["samples"]]
+
+        hwe_prefix = self.dir / "hwe"
+        run_madcats(["call", "--madc", madc, "--output-prefix", hwe_prefix, "--jobs", "1", "--prior", "hwe", *options])
+        hwe_genotypes = [sample["GT"] for record in read_vcf(str(hwe_prefix) + ".targets.vcf")[2]
+                         for sample in record["samples"]]
+        self.assertNotEqual(structure_genotypes, hwe_genotypes)
+
+        # Worker processes give the same result.
+        pooled_prefix = self.dir / "pooled"
+        run_madcats(["call", "--madc", madc, "--output-prefix", pooled_prefix, "--jobs", "2", "--prior", "structure",
+                     *options])
+        self.assertEqual(Path(str(pooled_prefix) + ".targets.vcf").read_text(),
+                         Path(str(prefix) + ".targets.vcf").read_text())
+
+    def test_structure_prior_without_structure_is_the_hwe_prior(self):
+        madc = self.madc_from_simulation(simulated_two_allele_markers(50, 4, markers=120, samples=40))
+        options = ["--ploidy", "4", "--overdispersion", "50", "--background-rate", "0.001"]
+        prefix = self.call(madc, "--prior", "structure", *options)
+        self.assertEqual(self.qc["structure_prior"]["neighbours_per_sample"], 0)
+        self.assertIn("no better than the whole table", self.qc["structure_prior"]["reason_none_used"])
+        self.assertIn("uses Hardy-Weinberg proportions for the whole table", self.stderr)
+        structure_records = self.vcf(prefix, "target")[2]
+        hwe_prefix = self.call(madc, "--prior", "hwe", *options)
+        self.assertEqual(self.qc["structure_prior"], {})
+        self.assertEqual(structure_records, self.vcf(hwe_prefix, "target")[2])
+
+    def test_structure_prior_cannot_be_combined_with_a_fitted_bias(self):
+        madc = self.write_madc([("M1", "Ref", REF_TAG, [9, 9]), ("M1", "Alt", ALT_TAG, [9, 9])], ["s1", "s2"])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as stderr:
+            madcats.main(["call", "--madc", str(madc), "--output-prefix", str(self.dir / "x"), "--prior", "structure",
+                          "--allele-bias", "fit"])
+        self.assertIn("cannot be combined with --prior structure", stderr.getvalue())
 
     def test_selfing_rate_needs_the_hwe_prior(self):
         madc = self.write_madc([("M1", "Ref", REF_TAG, [9, 9]), ("M1", "Alt", ALT_TAG, [9, 9])], ["s1", "s2"])

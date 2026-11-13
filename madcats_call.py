@@ -37,12 +37,19 @@ which turns a multiallelic record into one two-outcome problem per allele:
    population.  It is not the expectation under disomic inheritance in an
    allopolyploid, or in a family.  The ``norm`` prior makes no such
    assumption: the dosage probabilities follow a normal shape whose mean and
-   spread are fitted to the samples of each ploidy.
+   spread are fitted to the samples of each ploidy.  The ``structure`` prior
+   keeps Hardy-Weinberg proportions but gives every sample its own allele
+   frequency, taken from the samples most like it across the table's
+   markers (``find_neighbours``), for samples from several groups, clines or
+   families.
 3. Posterior.  Prior times likelihood, normalised over the dosages.
-4. Iteration (``hwe`` and ``norm``).  The allele frequencies, and for
-   ``norm`` the prior's two parameters, are re-estimated from the posteriors
-   and steps 1-3 repeat until they stop changing.  Records do not share any parameter, so each converges on
-   its own (polyRAD stops all loci together, on their mean change).
+4. Iteration (``hwe``, ``norm`` and ``structure``).  The allele frequencies,
+   and for ``norm`` the prior's two parameters, are re-estimated from the
+   posteriors and steps 1-3 repeat until they stop changing.  Records do not
+   share any parameter, so each converges on its own (polyRAD stops all loci
+   together, on their mean change).  With ``structure`` the lists of like
+   samples are made once for the whole table, and each record then iterates
+   on its own with them.
 
 The posteriors are *marginal*: one distribution per allele, not a joint
 distribution over whole genotypes.  With exactly two alleles the two
@@ -62,7 +69,8 @@ Reading map: the model (``expected_read_fraction``, ``allele_log_likelihoods``,
 ``call_marker``, ``fit_allele_bias``); from marginal posteriors to one
 genotype (``correct_dosages_to_ploidy``, ``best_dosages_summing_to_ploidy``);
 the estimate of the overdispersion and the background-read rate
-(``estimate_overdispersion``, ``estimate_read_model``); input
+(``estimate_overdispersion``, ``estimate_read_model``); the samples most
+like each sample, for the ``structure`` prior (``find_neighbours``); input
 (``read_count_table``, ``read_ploidy_table``); what each VCF type counts
 (``resolve_target``, ``RowReading``, ``process_marker``); VCF text
 (``format_record``, ``vcf_header``); the command line (``run_call``,
@@ -80,10 +88,13 @@ import csv
 import dataclasses
 import datetime as dt
 import functools
+import heapq
 import math
+import operator
 import re
 import sys
 import time
+from array import array
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
@@ -113,7 +124,8 @@ from madcats import (
 PRIOR_UNIFORM = "uniform"
 PRIOR_HWE = "hwe"
 PRIOR_NORM = "norm"
-PRIOR_CHOICES = (PRIOR_UNIFORM, PRIOR_HWE, PRIOR_NORM)
+PRIOR_STRUCTURE = "structure"
+PRIOR_CHOICES = (PRIOR_UNIFORM, PRIOR_HWE, PRIOR_NORM, PRIOR_STRUCTURE)
 # A prior with one free probability per dosage (updog's "flex").  It is used to estimate
 # the overdispersion and the background-read rate, and is not offered for calling: with
 # as many parameters as dosages it follows the reads too closely to steady a call.
@@ -145,7 +157,8 @@ class ModelSettings:
         other samples.  Those reads carry an allele at its population frequency.
     background_rate: probability that a read shows one allele although it
         came from another (see ``expected_read_fraction``).
-    prior: ``uniform``, ``hwe`` or ``norm`` (see ``normal_prior``).
+    prior: ``uniform``, ``hwe``, ``norm`` (see ``normal_prior``) or
+        ``structure`` (see ``neighbours``).
     selfing_rate: with the ``hwe`` prior, the share of individuals that come
         from self-fertilisation, from 0 (random mating) to 1 (fully inbred).
     fit_allele_bias: estimate an allelic bias for every record with two
@@ -153,7 +166,14 @@ class ModelSettings:
         to be read equally well.
     tolerance: the ``hwe`` iteration stops once the mean absolute change in
         the marker's allele frequencies is at or below this.
-    max_iterations: upper limit on ``hwe`` iterations.
+    max_iterations: upper limit on ``hwe`` iterations.  The ``structure``
+        prior has two stages (``hwe`` passes, then passes with the
+        neighbours), and each has this tolerance and this limit.
+    neighbours: with the ``structure`` prior, for each sample the indices of
+        the samples most like it (from ``find_neighbours``).  A sample's
+        prior is then Hardy-Weinberg at the allele frequency among those
+        samples, not among all samples.  Without neighbours the ``structure``
+        prior is the ``hwe`` prior.
     """
 
     overdispersion: float = DEFAULT_OVERDISPERSION
@@ -164,6 +184,7 @@ class ModelSettings:
     fit_allele_bias: bool = False
     tolerance: float = DEFAULT_TOLERANCE
     max_iterations: int = DEFAULT_MAX_ITERATIONS
+    neighbours: Optional[Tuple[Tuple[int, ...], ...]] = None
 
     def __post_init__(self) -> None:
         if self.overdispersion <= 0:
@@ -180,6 +201,10 @@ class ModelSettings:
             raise ValueError("tolerance must be positive")
         if self.max_iterations < 1:
             raise ValueError("max_iterations must be at least 1")
+        if self.fit_allele_bias and self.prior == PRIOR_STRUCTURE:
+            # The bias search scores a bias by the prior shared within a ploidy; it has not
+            # been worked out or tested for priors that differ from sample to sample.
+            raise ValueError("an allelic bias cannot be fitted with the structure prior")
 
 
 @dataclasses.dataclass
@@ -200,6 +225,11 @@ class MarkerCall:
     bias (see ``expected_read_fraction``); 1 unless a bias was fitted, in
     which case ``bias_fit`` describes the fit.
 
+    With the ``structure`` prior and neighbours, ``sample_frequencies`` holds
+    the allele frequencies each sample's own prior was computed at, as
+    ``[sample][allele]``, and ``priors`` the Hardy-Weinberg prior of the
+    passes before the neighbours were used.
+
     ``callable`` is False when no sample has a read at the marker: there is
     then no allele frequency to start from, and the other fields are empty.
     """
@@ -215,6 +245,7 @@ class MarkerCall:
     normal_prior_parameters: Dict[int, List[Tuple[float, float]]] = dataclasses.field(default_factory=dict)
     allele_biases: List[float] = dataclasses.field(default_factory=list)
     bias_fit: Optional["BiasFit"] = None
+    sample_frequencies: List[List[float]] = dataclasses.field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -785,6 +816,43 @@ def _fitted_priors(
     return priors, parameters
 
 
+def _log_likelihoods_of_samples(
+    depths: Sequence[Sequence[int]],
+    marker_depths: Sequence[int],
+    count_constants: Sequence[Sequence[float]],
+    ploidies: Sequence[int],
+    allele_frequencies: Sequence[float],
+    settings: ModelSettings,
+    biases: Sequence[float],
+) -> List[List[List[float]]]:
+    """Log-likelihood of every dosage for every sample and allele, as ``[sample][allele][dosage]``.
+
+    ``depths`` holds the alleles being computed, which need not be all the
+    alleles of the record; ``marker_depths`` is each sample's total over all
+    of them.  ``count_constants`` is ``count_constant`` for every sample and
+    allele, which does not change between passes.  The allele frequencies
+    matter only through the contamination term.
+    """
+    sample_count = len(depths)
+    allele_count = len(allele_frequencies)
+    likelihood_frequencies = [frequency_for_likelihood(frequency, sample_count) for frequency in allele_frequencies]
+    # Samples of the same ploidy share the beta-binomial of each dosage.
+    shapes = {
+        ploidy: [
+            dosage_shapes(ploidy, likelihood_frequencies[allele], settings, biases[allele])
+            for allele in range(allele_count)
+        ]
+        for ploidy in set(ploidies)
+    }
+    return [
+        [
+            log_likelihoods_for_counts(sample_depths[allele], marker_depth, constants[allele], shapes[ploidy][allele])
+            for allele in range(allele_count)
+        ]
+        for sample_depths, marker_depth, constants, ploidy in zip(depths, marker_depths, count_constants, ploidies)
+    ]
+
+
 def _marker_pass(
     depths: Sequence[Sequence[int]],
     marker_depths: Sequence[int],
@@ -797,37 +865,21 @@ def _marker_pass(
 ) -> Tuple[List[List[List[float]]], List[List[List[float]]]]:
     """Likelihoods and posteriors of every sample and allele for given allele frequencies and priors.
 
-    ``depths`` holds the alleles being computed, which need not be all the
-    alleles of the record; ``marker_depths`` is each sample's total over all
-    of them.  ``count_constants`` is ``count_constant`` for every sample and
-    allele, which does not change between passes.
+    The arguments are those of ``_log_likelihoods_of_samples``, with the
+    priors as ``[ploidy][allele][dosage]``.
     """
-    sample_count = len(depths)
-    allele_count = len(allele_frequencies)
-    likelihood_frequencies = [frequency_for_likelihood(frequency, sample_count) for frequency in allele_frequencies]
-    # Samples of the same ploidy share the beta-binomial of each dosage and the prior's logs.
-    shapes = {
-        ploidy: [
-            dosage_shapes(ploidy, likelihood_frequencies[allele], settings, biases[allele])
-            for allele in range(allele_count)
-        ]
-        for ploidy in priors
-    }
+    log_likelihoods = _log_likelihoods_of_samples(
+        depths, marker_depths, count_constants, ploidies, allele_frequencies, settings, biases
+    )
+    # Samples of the same ploidy share the prior's logs.
     log_priors = {ploidy: [log_probabilities(prior) for prior in priors[ploidy]] for ploidy in priors}
-    log_likelihoods = []
-    posteriors = []
-    for sample_depths, marker_depth, constants, ploidy in zip(depths, marker_depths, count_constants, ploidies):
-        sample_log_likelihoods = [
-            log_likelihoods_for_counts(sample_depths[allele], marker_depth, constants[allele], shapes[ploidy][allele])
-            for allele in range(allele_count)
+    posteriors = [
+        [
+            dosage_posterior(allele_log_likelihoods, priors[ploidy][allele], log_priors[ploidy][allele])
+            for allele, allele_log_likelihoods in enumerate(sample_log_likelihoods)
         ]
-        log_likelihoods.append(sample_log_likelihoods)
-        posteriors.append(
-            [
-                dosage_posterior(sample_log_likelihoods[allele], priors[ploidy][allele], log_priors[ploidy][allele])
-                for allele in range(allele_count)
-            ]
-        )
+        for sample_log_likelihoods, ploidy in zip(log_likelihoods, ploidies)
+    ]
     return log_likelihoods, posteriors
 
 
@@ -918,6 +970,105 @@ def _iterate_marker(
         priors=used_priors,
         normal_prior_parameters=normal_parameters,
         allele_biases=list(biases),
+    )
+
+
+# With the structure prior, the record's allele frequency over all samples counts as this
+# many extra neighbours of every sample.  It keeps a sample's frequency off 0 and 1 when
+# all its neighbours agree, and is what a sample without neighbours gets.
+NEIGHBOUR_TABLE_WEIGHT = 1.0
+
+
+def _neighbour_passes(
+    depths: Sequence[Sequence[int]],
+    marker_depths: Sequence[int],
+    count_constants: Sequence[Sequence[float]],
+    ploidies: Sequence[int],
+    settings: ModelSettings,
+    start: MarkerCall,
+) -> MarkerCall:
+    """Continue a Hardy-Weinberg result with each sample's prior taken from its neighbours.
+
+    ``start`` is the record called with the ``hwe`` prior.  From there, a
+    sample's frequency of an allele is the mean share of chromosome copies
+    expected to carry it among the sample's neighbours
+    (``settings.neighbours``), with the record's frequency counted as
+    ``NEIGHBOUR_TABLE_WEIGHT`` more neighbours, and the sample's prior is
+    Hardy-Weinberg at that frequency.  A sample is not among its own
+    neighbours, so its own reads do not enter its own prior.  The passes
+    repeat until the samples' frequencies settle, under the same tolerance
+    and limit as the ``hwe`` passes.
+    """
+    neighbours = settings.neighbours
+    allele_count = len(start.allele_frequencies)
+    biases = start.allele_biases
+    weights = [len(sample_neighbours) + NEIGHBOUR_TABLE_WEIGHT for sample_neighbours in neighbours]
+
+    def expected_shares(posteriors: Sequence[Sequence[Sequence[float]]]) -> List[List[float]]:
+        """Each sample's expected share of copies carrying each allele, as ``[allele][sample]``."""
+        return [
+            [
+                posterior_mean_dosage(sample_posteriors[allele]) / ploidy
+                for sample_posteriors, ploidy in zip(posteriors, ploidies)
+            ]
+            for allele in range(allele_count)
+        ]
+
+    def neighbourhood_frequencies(
+        shares: Sequence[Sequence[float]], table_frequencies: Sequence[float]
+    ) -> List[List[float]]:
+        """Each sample's allele frequencies among its neighbours, as ``[allele][sample]``."""
+        return [
+            [
+                (sum(map(allele_shares.__getitem__, sample_neighbours)) + NEIGHBOUR_TABLE_WEIGHT * table_frequency)
+                / weight
+                for sample_neighbours, weight in zip(neighbours, weights)
+            ]
+            for allele_shares, table_frequency in zip(shares, table_frequencies)
+        ]
+
+    table_frequencies = list(start.allele_frequencies)
+    log_likelihoods = start.log_likelihoods
+    sample_frequencies = neighbourhood_frequencies(expected_shares(start.posteriors), table_frequencies)
+    passes = 0
+    while True:
+        passes += 1
+        if settings.contamination_rate > 0:
+            # Only the contamination term makes the likelihood depend on the record's frequencies.
+            log_likelihoods = _log_likelihoods_of_samples(
+                depths, marker_depths, count_constants, ploidies, table_frequencies, settings, biases
+            )
+        posteriors = [
+            [
+                dosage_posterior(
+                    sample_log_likelihoods[allele],
+                    hwe_prior(ploidy, sample_frequencies[allele][sample], settings.selfing_rate),
+                )
+                for allele in range(allele_count)
+            ]
+            for sample, (sample_log_likelihoods, ploidy) in enumerate(zip(log_likelihoods, ploidies))
+        ]
+        table_frequencies = frequencies_from_posteriors(posteriors, ploidies)
+        used_frequencies = sample_frequencies
+        sample_frequencies = neighbourhood_frequencies(expected_shares(posteriors), table_frequencies)
+        change = sum(
+            abs(new - old)
+            for new_allele, old_allele in zip(sample_frequencies, used_frequencies)
+            for new, old in zip(new_allele, old_allele)
+        ) / (allele_count * len(ploidies))
+        if change <= settings.tolerance or passes >= settings.max_iterations:
+            break
+    return MarkerCall(
+        True,
+        table_frequencies,
+        log_likelihoods,
+        posteriors,
+        iterations=start.iterations + passes,
+        final_change=change,
+        converged=start.converged and change <= settings.tolerance,
+        priors=start.priors,
+        allele_biases=list(biases),
+        sample_frequencies=[list(of_sample) for of_sample in zip(*used_frequencies)],
     )
 
 
@@ -1073,6 +1224,7 @@ def _with_mirrored_reference_allele(alternate: MarkerCall, ploidies: Sequence[in
             for ploidy, parameters in alternate.normal_prior_parameters.items()
         },
         allele_biases=[1.0 / alternate.allele_biases[0], alternate.allele_biases[0]],
+        sample_frequencies=[[1.0 - of_sample[0], of_sample[0]] for of_sample in alternate.sample_frequencies],
     )
 
 
@@ -1095,7 +1247,9 @@ def call_marker(
     the ``norm`` prior each pass also re-fits the prior to the posteriors
     (the two steps of an EM iteration), and the passes repeat until neither
     the frequencies nor any prior probability changes by more than the
-    tolerance.
+    tolerance.  With the ``structure`` prior the record is first called with
+    the ``hwe`` prior and then continued with each sample's prior taken from
+    its neighbours (``_neighbour_passes``).
 
     A record with two alleles is computed for its second (alternate) allele
     only; the first is its mirror image (``_with_mirrored_reference_allele``).
@@ -1104,6 +1258,10 @@ def call_marker(
     """
     if len(depths) != len(ploidies):
         raise ValueError("depths and ploidies must have one entry per sample")
+    # Without any neighbours the structure prior is the Hardy-Weinberg prior.
+    use_neighbours = settings.prior == PRIOR_STRUCTURE and settings.neighbours is not None and any(settings.neighbours)
+    if use_neighbours and len(settings.neighbours) != len(ploidies):
+        raise ValueError("settings.neighbours must have one entry per sample")
     frequencies = list(start_frequencies) if start_frequencies is not None else depth_ratio_frequencies(depths)
     if frequencies is None:
         return MarkerCall(callable=False, allele_frequencies=[], log_likelihoods=[], posteriors=[])
@@ -1121,9 +1279,13 @@ def call_marker(
     if two_alleles and settings.fit_allele_bias:
         result = fit_allele_bias(depths, marker_depths, count_constants, ploidies, settings, frequencies)
     else:
+        # The structure prior starts from the Hardy-Weinberg result, which _iterate_marker
+        # gives for any prior it does not fit itself.
         result = _iterate_marker(
             depths, marker_depths, count_constants, ploidies, settings, frequencies, [1.0] * len(frequencies)
         )
+    if use_neighbours:
+        result = _neighbour_passes(depths, marker_depths, count_constants, ploidies, settings, result)
     return _with_mirrored_reference_allele(result, ploidies) if two_alleles else result
 
 
@@ -1445,6 +1607,218 @@ def estimate_read_model(
         rates[best],
         tried[rates[best]],
         {rate: (estimate.value, log_likelihood_at(rates.index(rate))) for rate, estimate in sorted(tried.items())},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Population structure: the samples most like each sample
+# ---------------------------------------------------------------------------
+
+# The numbers of neighbours tried; 0 is the plain Hardy-Weinberg prior.
+NEIGHBOUR_COUNTS = (0, 5, 10, 20, 40, 80)
+# Samples are compared on at most this many markers, taken at even spacing.
+NEIGHBOUR_MAX_MARKERS = 1000
+# Below these sizes the table is too small to tell which samples are alike.
+NEIGHBOUR_MIN_MARKERS = 100
+NEIGHBOUR_MIN_SAMPLES = 20
+# The number of neighbours is judged on at most this many markers of each half.
+NEIGHBOUR_JUDGED_MARKERS = 250
+# The samples are handed to the worker processes in about this many blocks.
+NEIGHBOUR_BLOCKS = 16
+
+
+@dataclasses.dataclass
+class NeighbourChoice:
+    """Result of ``find_neighbours``.
+
+    ``neighbours`` holds, for each sample, the indices of the samples most
+    like it, nearest first.  Every sample has ``count`` of them; ``count`` is
+    0 when neighbours predict a sample no better than the whole table does,
+    or when the table is too small to tell, and ``reason`` then says which.
+    ``markers_used`` is the number of markers the samples were compared on.
+    ``error_by_count`` maps each number of neighbours tried to the mean
+    squared error with which that many neighbours predicted the samples'
+    allele shares at markers they had not been chosen on.
+    """
+
+    neighbours: Tuple[Tuple[int, ...], ...]
+    count: int
+    markers_used: int
+    error_by_count: Dict[int, float]
+    reason: Optional[str] = None
+
+
+def expected_alternate_shares(
+    depths: Sequence[Sequence[int]], ploidies: Sequence[int], settings: ModelSettings
+) -> Optional[List[float]]:
+    """Each sample's expected share of chromosome copies that carry a marker's second allele.
+
+    ``depths`` is ``[sample][allele]`` with two alleles.  The share is the
+    posterior mean dosage divided by the ploidy, so that samples of different
+    ploidy can be compared.  A sample without reads gets the marker's allele
+    frequency.  Returns None when no sample has a read.
+    """
+    result = call_marker(depths, ploidies, settings)
+    if not result.callable:
+        return None
+    return [
+        posterior_mean_dosage(sample_posteriors[1]) / ploidy
+        for sample_posteriors, ploidy in zip(result.posteriors, ploidies)
+    ]
+
+
+def _sum_of_products(first: Sequence[float], second: Sequence[float]) -> float:
+    return sum(map(operator.mul, first, second))
+
+
+if hasattr(math, "sumprod"):          # Python 3.12 and later: several times faster
+    _sum_of_products = math.sumprod   # noqa: F811
+
+
+def _neighbour_candidates(
+    samples: Sequence[int],
+    shares_by_half: Sequence[Sequence[Sequence[float]]],
+    judged_by_half: Sequence[Sequence[Sequence[float]]],
+    judged_means: Sequence[Sequence[float]],
+    counts: Sequence[int],
+) -> List[Tuple[List[int], List[float]]]:
+    """For each of ``samples``: the samples most like it, and how well its nearest ones predict it.
+
+    ``shares_by_half[half][sample]`` holds a sample's allele shares at the
+    markers of one half of the table, and ``judged_by_half`` the same for a
+    thinned set of each half's markers, whose means over all samples are
+    ``judged_means``.  Two samples are alike when their shares differ little:
+    the measure is the sum of squared differences over markers.
+
+    Returns, per sample, its ``max(counts)`` most similar samples over both
+    halves together, nearest first, and for each entry of ``counts``
+    (ascending) the summed squared error of predicting the sample's shares at
+    the judged markers of one half from that many of its nearest samples as
+    found on the other half, both ways round.  The prediction is the one the
+    prior uses: the neighbours' mean with the marker's mean counted as
+    ``NEIGHBOUR_TABLE_WEIGHT`` more of them.
+    """
+    sample_count = len(shares_by_half[0])
+    limit = max(counts)
+    squared_lengths = [[_sum_of_products(row, row) for row in half] for half in shares_by_half]
+    results = []
+    for sample in samples:
+        others = [other for other in range(sample_count) if other != sample]
+        differences_by_half = []
+        for half, lengths in zip(shares_by_half, squared_lengths):
+            own = half[sample]
+            # |a - b|^2 = |a|^2 + |b|^2 - 2 a.b
+            differences_by_half.append(
+                [lengths[sample] + lengths[other] - 2.0 * _sum_of_products(own, half[other])
+                 for other in range(sample_count)]
+            )
+        errors = [0.0] * len(counts)
+        for measured, judged in ((0, 1), (1, 0)):
+            nearest = heapq.nsmallest(limit, others, key=differences_by_half[measured].__getitem__)
+            own = judged_by_half[judged][sample]
+            means = judged_means[judged]
+            neighbour_totals = [0.0] * len(own)
+            included = 0
+            for index, count in enumerate(counts):
+                for other in nearest[included:count]:
+                    neighbour_totals = list(map(operator.add, neighbour_totals, judged_by_half[judged][other]))
+                included = count
+                weight = count + NEIGHBOUR_TABLE_WEIGHT
+                errors[index] += sum(
+                    (value - (total + NEIGHBOUR_TABLE_WEIGHT * mean) / weight) ** 2
+                    for value, total, mean in zip(own, neighbour_totals, means)
+                )
+        overall = [first + second for first, second in zip(*differences_by_half)]
+        results.append((heapq.nsmallest(limit, others, key=overall.__getitem__), errors))
+    return results
+
+
+def find_neighbours(
+    depths_by_marker: Sequence[Sequence[Sequence[int]]],
+    ploidies: Sequence[int],
+    settings: ModelSettings = ModelSettings(),
+    map_markers=map,
+) -> NeighbourChoice:
+    """Find the samples most like each sample across markers, and how many of them to use.
+
+    This is the one step of the ``structure`` prior that looks at the whole
+    table.  ``depths_by_marker`` is ``[marker][sample][allele]`` with two
+    alleles per marker (reference and alternate).
+
+    Every marker is called with the ``hwe`` prior, which gives each sample an
+    expected share of alternate copies per marker.  Samples whose shares
+    differ little over the markers are alike: members of one subpopulation,
+    of one family, or close on a cline.  The sum of squared differences used
+    here ranks pairs of samples as a genomic relationship matrix would.
+
+    How many neighbours to use is chosen from ``NEIGHBOUR_COUNTS`` by
+    prediction.  The markers are split in two halves; the neighbours found on
+    one half predict each sample's shares at the other half, and the number
+    with the smallest error wins.  With too many neighbours a small group or
+    family is diluted, and with too few the frequency is noisy.  When no
+    number predicts better than the table's own frequencies (0 neighbours)
+    there is no structure worth modelling and the prior stays Hardy-Weinberg.
+    The halves matter: judged on the markers they were found on, neighbours
+    always look better than they are, because each of those markers helped
+    pick them.
+
+    On simulated groups, clines and families and on thinned potato DArTag
+    counts, the prior built from these lists called as many genotypes
+    correctly as polyRAD's population-structure prior or more (see
+    docs/DEVELOPMENT.md).
+
+    ``map_markers`` is a replacement for ``map``, for calling the markers and
+    comparing the samples in worker processes.
+    """
+    sample_count = len(ploidies)
+    no_neighbours = tuple(() for _ in ploidies)
+    if sample_count < NEIGHBOUR_MIN_SAMPLES:
+        return NeighbourChoice(no_neighbours, 0, 0, {}, f"fewer than {NEIGHBOUR_MIN_SAMPLES} samples")
+    first_stage = dataclasses.replace(settings, prior=PRIOR_HWE, fit_allele_bias=False, neighbours=None)
+    shares_by_marker = [
+        shares
+        for shares in map_markers(
+            functools.partial(expected_alternate_shares, ploidies=ploidies, settings=first_stage),
+            _evenly_spaced(depths_by_marker, NEIGHBOUR_MAX_MARKERS),
+        )
+        if shares is not None
+    ]
+    if len(shares_by_marker) < NEIGHBOUR_MIN_MARKERS:
+        return NeighbourChoice(
+            no_neighbours, 0, len(shares_by_marker), {}, f"fewer than {NEIGHBOUR_MIN_MARKERS} markers with reads"
+        )
+
+    def rows_by_sample(markers: Sequence[Sequence[float]]) -> List[array]:
+        """Turn ``[marker][sample]`` into one compact row of shares per sample."""
+        return [array("d", (marker_shares[sample] for marker_shares in markers)) for sample in range(sample_count)]
+
+    halves = (shares_by_marker[0::2], shares_by_marker[1::2])
+    judged_halves = [_evenly_spaced(half, NEIGHBOUR_JUDGED_MARKERS) for half in halves]
+    counts = [count for count in NEIGHBOUR_COUNTS if count < sample_count]
+    block_size = -(-sample_count // NEIGHBOUR_BLOCKS)
+    blocks = [range(start, min(start + block_size, sample_count)) for start in range(0, sample_count, block_size)]
+    candidates = [
+        candidate
+        for block_candidates in map_markers(
+            functools.partial(
+                _neighbour_candidates,
+                shares_by_half=[rows_by_sample(half) for half in halves],
+                judged_by_half=[rows_by_sample(half) for half in judged_halves],
+                judged_means=[[sum(marker_shares) / sample_count for marker_shares in half] for half in judged_halves],
+                counts=counts,
+            ),
+            blocks,
+        )
+        for candidate in block_candidates
+    ]
+    judged_cells = sample_count * sum(len(half) for half in judged_halves)
+    error_by_count = {
+        count: sum(errors[index] for _, errors in candidates) / judged_cells for index, count in enumerate(counts)
+    }
+    best = min(counts, key=lambda count: (error_by_count[count], count))
+    reason = None if best else "neighbours predict the samples' allele shares no better than the whole table does"
+    return NeighbourChoice(
+        tuple(tuple(nearest[:best]) for nearest, _ in candidates), best, len(shares_by_marker), error_by_count, reason
     )
 
 
@@ -2145,6 +2519,21 @@ def model_description(
             f"it assumes {mating} and that each chromosome copy is drawn independently "
             "(polysomic inheritance in polyploids)"
         )
+    elif settings.prior == PRIOR_STRUCTURE:
+        neighbour_count = len(settings.neighbours[0]) if settings.neighbours else 0
+        if neighbour_count:
+            prior = (
+                "Hardy-Weinberg prior at each sample's own allele frequency, which is the mean over the "
+                f"{neighbour_count} samples most like it across the table's markers and the record's frequency "
+                "counted as one more sample; it assumes random mating among like samples and that each chromosome "
+                "copy is drawn independently (polysomic inheritance in polyploids)"
+            )
+        else:
+            prior = (
+                "Hardy-Weinberg prior with one allele frequency per record estimated over all samples together "
+                "(the structure prior was asked for and found no like samples to use); it assumes random mating "
+                "and that each chromosome copy is drawn independently (polysomic inheritance in polyploids)"
+            )
     elif settings.prior == PRIOR_NORM:
         prior = (
             "normal-shaped prior over dosages (updog's norm; Gerard and Ferrao 2020), with a mean and standard "
@@ -2258,6 +2647,24 @@ def _number_or_auto(parse):
     return parse_value
 
 
+def target_depths_by_marker(tasks: Sequence[MarkerTask], sample_count: int) -> List[List[List[int]]]:
+    """Reference-type and alternate-type read counts of every marker that has an alternate row.
+
+    Returns ``[marker][sample][allele]``.  These are the counts the target
+    records are called from; the read-model estimate and the search for like
+    samples use them because every marker has them, whatever VCF types were
+    asked for.
+    """
+    depths_by_marker = []
+    for task in tasks:
+        rows = [row for row in task.rows if row.sequence]
+        if not any(row.category in ALTERNATE_CATEGORIES for row in rows):
+            continue
+        counts_by_row, _ = _without_negative_cells(rows, sample_count)
+        depths_by_marker.append(target_allele_depths(rows, counts_by_row, sample_count)[0])
+    return depths_by_marker
+
+
 def choose_read_model(
     tasks: Sequence[MarkerTask],
     ploidies: Sequence[int],
@@ -2290,16 +2697,8 @@ def choose_read_model(
         overdispersion_report["used"], background_report["used"] = overdispersion, background_rate
         return overdispersion, background_rate, overdispersion_report, background_report
 
-    sample_count = len(ploidies)
-    depths_by_marker = []
-    for task in tasks:
-        rows = [row for row in task.rows if row.sequence]
-        if not any(row.category in ALTERNATE_CATEGORIES for row in rows):
-            continue
-        counts_by_row, _ = _without_negative_cells(rows, sample_count)
-        depths_by_marker.append(target_allele_depths(rows, counts_by_row, sample_count)[0])
     estimate = estimate_read_model(
-        depths_by_marker,
+        target_depths_by_marker(tasks, len(ploidies)),
         ploidies,
         dataclasses.replace(settings, prior=PRIOR_FREE, selfing_rate=0.0),
         BACKGROUND_RATE_GRID if background_rate == AUTO else (background_rate,),
@@ -2393,6 +2792,8 @@ def run_call(args: argparse.Namespace) -> int:
     vcf_types = tuple(vcf_type for vcf_type in VCF_TYPES if vcf_type in args.vcf)
     if args.selfing_rate > 0 and args.prior != PRIOR_HWE:
         raise MadcError("--selfing-rate applies to --prior hwe only")
+    if args.allele_bias == "fit" and args.prior == PRIOR_STRUCTURE:
+        raise MadcError("--allele-bias fit cannot be combined with --prior structure")
 
     sample_names, rows_by_marker, count_overflow = read_count_table(madc)
     ploidy_by_sample = read_ploidy_table(Path(args.ploidy_file)) if args.ploidy_file else {}
@@ -2453,8 +2854,34 @@ def run_call(args: argparse.Namespace) -> int:
         overdispersion, background_rate, overdispersion_report, background_report = choose_read_model(
             tasks, ploidies, model, args.overdispersion, args.background_rate, map_over_markers
         )
+        settings = dataclasses.replace(model, overdispersion=overdispersion, background_rate=background_rate)
+        structure_report: Dict[str, object] = {}
+        if args.prior == PRIOR_STRUCTURE:
+            choice = find_neighbours(
+                target_depths_by_marker(tasks, len(ploidies)), ploidies, settings, map_over_markers
+            )
+            settings = dataclasses.replace(settings, neighbours=choice.neighbours)
+            structure_report = {
+                "neighbours_per_sample": choice.count,
+                "markers_compared": choice.markers_used,
+                "prediction_error_by_neighbours": {
+                    str(count): round(error, 6) for count, error in choice.error_by_count.items()
+                },
+                "reason_none_used": choice.reason,
+            }
+            if choice.count:
+                print(
+                    f"Structure prior: each sample's allele frequencies are taken from the {choice.count} samples "
+                    f"most like it (compared on {choice.markers_used:,} markers)",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"note: --prior structure uses Hardy-Weinberg proportions for the whole table: {choice.reason}",
+                    file=sys.stderr,
+                )
         options = CallOptions(
-            settings=dataclasses.replace(model, overdispersion=overdispersion, background_rate=background_rate),
+            settings=settings,
             vcf_types=vcf_types,
             min_depth=args.min_dp,
             min_genotype_quality=args.min_gq,
@@ -2562,6 +2989,7 @@ def run_call(args: argparse.Namespace) -> int:
         ),
         "overdispersion": overdispersion_report,
         "background_rate": background_report,
+        "structure_prior": structure_report,
         "coordinates": "marker-local",
         "samples": {
             "count": len(sample_names),
@@ -2623,7 +3051,7 @@ def add_call_command(subparsers) -> None:
             "record types: target (the designed variant of each marker; the default), all (targets plus other "
             "base substitutions in the tags) and haplotype (whole tag sequences as alleles). Each type goes to "
             "its own file. Ploidy can differ between samples. The model is polyRAD's: a beta-binomial "
-            "likelihood of the read counts with a uniform or Hardy-Weinberg prior. Coordinates are "
+            "likelihood of the read counts with a prior chosen by --prior. Coordinates are "
             "marker-local: CHROM is the marker and POS a position on its Ref tag. Reads MADCs from generate, "
             "vendor DArT MADCs and HapApp fixed-allele-ID MADCs."
         ),
@@ -2670,9 +3098,11 @@ def add_call_command(subparsers) -> None:
         default=PRIOR_HWE,
         help=(
             "genotype prior: uniform (every dosage equally probable), hwe (Hardy-Weinberg proportions for "
-            "allele frequencies estimated from all samples; assumes random mating and polysomic inheritance) "
-            "or norm (a normal shape over the dosages fitted per record and ploidy, as in updog; does not "
-            f"assume random mating) (default: {PRIOR_HWE})"
+            "allele frequencies estimated from all samples; assumes random mating and polysomic inheritance), "
+            "norm (a normal shape over the dosages fitted per record and ploidy, as in updog; does not "
+            "assume random mating) or structure (Hardy-Weinberg proportions at each sample's own allele "
+            "frequencies, taken from the samples most like it; for subpopulations, clines and families, and "
+            f"of most use at low read depth) (default: {PRIOR_HWE})"
         ),
     )
     calling.add_argument(
@@ -2722,13 +3152,17 @@ def add_call_command(subparsers) -> None:
     calling.add_argument(
         "--tol", type=_positive_float, default=DEFAULT_TOLERANCE,
         help=(
-            "with --prior hwe or norm, stop iterating a record once its allele frequencies (and, with norm, "
-            f"its prior probabilities) change by no more than this (default: {DEFAULT_TOLERANCE:g})"
+            "with --prior hwe, norm or structure, stop iterating a record once its allele frequencies (with "
+            "norm, also its prior probabilities; with structure, also the samples' own allele frequencies) "
+            f"change by no more than this (default: {DEFAULT_TOLERANCE:g})"
         ),
     )
     calling.add_argument(
         "--max-iterations", type=positive_int, default=DEFAULT_MAX_ITERATIONS,
-        help=f"with --prior hwe or norm, the most iterations a record may take (default: {DEFAULT_MAX_ITERATIONS})",
+        help=(
+            "with --prior hwe, norm or structure, the most iterations a record may take; with structure, in "
+            f"each of its two stages (default: {DEFAULT_MAX_ITERATIONS})"
+        ),
     )
     calling.add_argument(
         "--min-dp", type=nonnegative_int, default=DEFAULT_MIN_DEPTH,

@@ -15,6 +15,15 @@ Notable changes by version. Measurements behind each change are in the
   marginal posterior among the called dosages. Coordinates are marker-local. It uses only the
   standard library. The tests compare its likelihoods, posteriors, converged allele frequencies
   and genotypes with polyRAD 2.0.1 on stored reference values.
+- `call --prior structure` is a prior for samples from several subpopulations, a cline or families.
+  Each sample gets Hardy-Weinberg proportions at its own allele frequency, taken from the samples
+  most like it across the table's markers; how many of them to use is chosen by how well they
+  predict the sample at markers they were not chosen on, and is 0 (the `hwe` prior) when there is
+  no structure. On thirteen tables (simulated groups, clines and families at 8 to 150 reads, and
+  potato DArTag counts thinned to 10 and 25 reads) it called as many genotypes correctly as
+  polyRAD's `IteratePopStruct` or up to 0.7 points more, and gained 0.5 to 5.5 points over `hwe`
+  at 8 to 25 reads. It needs no extra dependency. It cannot yet be combined with
+  `--allele-bias fit` or `--selfing-rate`.
 - `call --allele-bias fit` estimates updog's allelic bias for every record with two alleles and
   calls with it. With the other settings equal, the fitted bias is within 0.1% of updog 2.1.7's and
   the genotypes are the same, on stored reference values. On two tetraploid alfalfa populations it

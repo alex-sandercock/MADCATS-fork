@@ -32,8 +32,8 @@ contig in the header, and a `##madcatsCoordinates` line says so.
 
 The model is adapted from [polyRAD](https://github.com/lvclark/polyRAD) (Clark, Lipka and Sacks
 2019), with the `norm` prior of [updog](https://github.com/dcgerard/updog) (Gerard and Ferrão
-2020) as an option. Within a record each allele is considered on its own, against all the other alleles
-together:
+2020) and a prior for structured populations as options. Within a record each allele is considered
+on its own, against all the other alleles together:
 
 1. **Likelihood.** In a sample of ploidy *P* an allele can be present in 0 to *P* copies (its
    dosage). The probability of the allele's read count, out of the sample's reads in the record,
@@ -44,17 +44,20 @@ together:
 2. **Prior.** `--prior uniform` makes every dosage equally probable. `--prior hwe` (the default)
    uses Hardy-Weinberg proportions for the allele's frequency, estimated over all the samples
    together. `--prior norm` gives the dosages a normal shape, with a mean and a spread fitted to
-   the samples.
+   the samples. `--prior structure` uses Hardy-Weinberg proportions at each sample's own allele
+   frequency, taken from the samples most like it.
 3. **Posterior.** Prior times likelihood, normalised over the dosages.
-4. **Iteration** (`hwe` and `norm`). The allele frequencies, and with `norm` the prior's mean and
-   spread, are re-estimated from the posteriors and steps 1–3 repeat until they change by no more
-   than `--tol`, or `--max-iterations` is reached. Each record converges on its own.
+4. **Iteration** (`hwe`, `norm` and `structure`). The allele frequencies, and with `norm` the
+   prior's mean and spread, are re-estimated from the posteriors and steps 1–3 repeat until they
+   change by no more than `--tol`, or `--max-iterations` is reached. Each record converges on its
+   own.
 
 The Hardy-Weinberg prior assumes random mating and that every chromosome copy is drawn
 independently, which holds for diploids and autopolyploids. It is not the expectation under
 disomic inheritance in an allopolyploid, in a biparental family, or when samples of different
 ploidy come from different populations. Use `--prior norm` or `--prior uniform` when it does not
-fit.
+fit, or `--prior structure` when the samples come from several subpopulations or families and the
+read depth is low.
 
 The norm prior makes no assumption about mating. Its dosage probabilities are proportional to a
 normal density at the dosages 0 to *P*, so it can be narrower than Hardy-Weinberg proportions (one
@@ -64,6 +67,43 @@ likelihood, `call` and updog reach the same prior and the same genotypes. It is 
 for each ploidy among the samples, since a shape over the dosages of one ploidy says nothing about
 another. A ploidy with fewer than 10 samples uses Hardy-Weinberg proportions instead; `call` says
 so and lists those ploidies in the QC JSON. In a haplotype record every allele gets its own fit.
+
+The structure prior is for samples that are not one randomly mating population: subpopulations, a
+cline, or a set of families. It keeps Hardy-Weinberg proportions but gives each sample its own
+allele frequency in every record: the mean over the samples most like it (its neighbours), with
+the record's frequency over all samples counted as one more of them. A sample's own reads never
+enter its own prior. The neighbours are found once for the whole table, before any record is
+called:
+
+1. The target counts of the markers (at most 1,000, at even spacing) are called with the `hwe`
+   prior, which gives every sample an expected share of alternate copies at each marker.
+2. Two samples are alike when those shares differ little over the markers. This ranks pairs of
+   samples as a genomic relationship matrix would.
+3. The number of neighbours is chosen from 0, 5, 10, 20, 40 and 80 by prediction: the neighbours
+   found on one half of the markers predict each sample's shares at the other half, and the number
+   with the smallest error is used. If none predicts better than the table's own frequencies, the
+   number is 0 and the prior is the `hwe` prior; `call` says so.
+
+Records are then called one at a time as with the other priors, each first with the `hwe` prior
+and then with the neighbours. The number of neighbours used and the error of each number tried are
+in the QC JSON.
+
+- It matters at low read depth. On simulated tetraploids with 8 reads per sample and marker it
+  called 0.8 to 5.5 points more genotypes correctly than `hwe`, depending on how strong the
+  structure was; with 25 reads 0.5 to 2.5 points, and with 150 reads 0.8. On 85 potato clones from
+  ten families, thinned to 10 and 25 reads, the gain against SNP-array genotypes was 0.9 and 0.7
+  points; at their full depth of about 300 reads there was none.
+- Compared with polyRAD's `IteratePopStruct` on the same thirteen tables it called the same share
+  of genotypes correctly or more, by up to 0.7 points. On a table without structure polyRAD's
+  prior lost 3.4 points and `call` chose 0 neighbours.
+- It needs at least 20 samples and 100 markers with reads to compare samples on; below that it is
+  the `hwe` prior, with a note.
+- It cannot be combined with `--allele-bias fit` or `--selfing-rate`. Neither combination has been
+  tested.
+- It takes two to three times as long as `--prior hwe`.
+- The method is MADCATS's own, not a port. polyRAD models structure with principal components;
+  that approach and a relationship-matrix predictor were tried in its place and were no better
+  (see the development record).
 
 For inbred lines and partly selfing species, `--selfing-rate` adjusts the Hardy-Weinberg prior: a
 share of each generation comes from self-fertilisation, which moves prior probability from the
@@ -142,14 +182,14 @@ get haplotype records and off-target records.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--prior {uniform,hwe,norm}` | `hwe` | Genotype prior (see [the genotype model](#the-genotype-model)) |
+| `--prior {uniform,hwe,norm,structure}` | `hwe` | Genotype prior (see [the genotype model](#the-genotype-model)) |
 | `--selfing-rate <FLOAT>` | 0 | With `--prior hwe`, the share of individuals that come from self-fertilisation: 0 is random mating, 1 is fully inbred lines |
-| `--allele-bias {off,fit}` | `off` | Allelic bias, where a copy of one allele yields more reads than a copy of the other. `fit` estimates it for each record with two alleles (see below) |
+| `--allele-bias {off,fit}` | `off` | Allelic bias, where a copy of one allele yields more reads than a copy of the other. `fit` estimates it for each record with two alleles (see below). Not with `--prior structure` |
 | `--overdispersion <auto\|FLOAT>` | `auto` | Beta-binomial overdispersion parameter, as in polyRAD. Lower values allow read fractions to stray further from the expected fraction. `auto` estimates it from the read counts (see below); a number sets it |
 | `--background-rate <auto\|FLOAT>` | `auto` | Probability that a read shows one allele although it came from another. `auto` estimates it from the read counts (see below); a number sets it |
 | `--contamination-rate <FLOAT>` | 0 | polyRAD's contamination: the share of a sample's reads that come from other samples and show an allele at its frequency among them. `--background-rate` covers the same reads and more, so this is off unless set; polyRAD uses 0.001 |
-| `--tol <FLOAT>` | 1e-5 | With `--prior hwe` or `norm`, stop iterating a record once its allele frequencies (and, with `norm`, its prior probabilities) change by no more than this |
-| `--max-iterations <INT>` | 100 | With `--prior hwe` or `norm`, the most iterations a record may take |
+| `--tol <FLOAT>` | 1e-5 | With `--prior hwe`, `norm` or `structure`, stop iterating a record once its allele frequencies change by no more than this (with `norm`, also its prior probabilities; with `structure`, also the samples' own allele frequencies) |
+| `--max-iterations <INT>` | 100 | With `--prior hwe`, `norm` or `structure`, the most iterations a record may take; with `structure`, in each of its two stages |
 
 ### Overdispersion and background reads
 
@@ -258,7 +298,7 @@ are in the development record):
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--jobs <INT>` | up to 4 | Worker processes. Markers are independent, and the output does not depend on this |
+| `--jobs <INT>` | up to 4 | Worker processes. Records are called independently of each other, and the output does not depend on this |
 
 ## Examples
 
@@ -269,6 +309,10 @@ madcats call --madc results/project_MADC.csv --output-prefix results/project
 # Target and haplotype VCFs of a mixed-ploidy project
 madcats call --madc results/project_MADC.csv --output-prefix results/project \
   --vcf target haplotype --ploidy 4 --ploidy-file ploidy.tsv
+
+# A tetraploid diversity panel at low read depth: each sample's prior follows the samples most like it
+madcats call --madc results/panel_MADC.csv --output-prefix results/panel \
+  --ploidy 4 --prior structure
 ```
 
 ## Outputs
@@ -278,7 +322,7 @@ madcats call --madc results/project_MADC.csv --output-prefix results/project \
 | `PREFIX.targets.vcf`, `PREFIX.all.vcf`, `PREFIX.haplotypes.vcf` | The VCFs chosen with `--vcf` (VCF 4.3, uncompressed) |
 | `PREFIX.haplotypes.alleles.csv` | With `--vcf haplotype`: for each marker and allele number, the MADC AlleleIDs it was counted from, its sequence and its total reads |
 | `PREFIX.bias.csv` | With `--allele-bias fit`: for each fitted record, the bias of the reference allele, the log-likelihood of the fit (after the prior on the bias), the starting value the search continued from, the number of bias values tried, and whether the fit converged or ended at a search limit |
-| `PREFIX.qc.json` | Parameters, the model in words, the overdispersion and background-rate estimates, a summary of the fitted biases, samples per ploidy, and per VCF: records, genotypes called and missing by reason, reads used and excluded, records that did not converge, targets skipped by reason |
+| `PREFIX.qc.json` | Parameters, the model in words, the overdispersion and background-rate estimates, the number of neighbours chosen for the structure prior, a summary of the fitted biases, samples per ploidy, and per VCF: records, genotypes called and missing by reason, reads used and excluded, records that did not converge, targets skipped by reason |
 
 ### VCF fields
 
