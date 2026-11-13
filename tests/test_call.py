@@ -936,8 +936,19 @@ class CommandTestCase(unittest.TestCase):
             self.qc = json.load(handle)
         return prefix
 
+    def call_error(self, madc, *options):
+        """The message of a ``call`` command that is expected to stop with an error."""
+        arguments = ["call", "--madc", str(madc), "--output-prefix", str(self.dir / "calls"), *options]
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as stderr:
+            madcats.main(arguments)
+        return stderr.getvalue()
+
     def vcf(self, prefix, vcf_type):
         return read_vcf(str(prefix) + call.VCF_FILE_SUFFIX[vcf_type])
+
+    def model_line(self, prefix):
+        """The header line of the target VCF that describes the model in words."""
+        return next(line for line in self.vcf(prefix, "target")[0] if line.startswith("##madcatsModel="))
 
 
 class TargetVcfTests(CommandTestCase):
@@ -1294,9 +1305,7 @@ class CommandBehaviourTests(CommandTestCase):
         self.assertEqual(report["used"], report["estimate"])
         self.assertEqual(report["markers_used"], 40)
         self.assertIn("Estimated overdispersion", self.stderr)
-        header = self.vcf(prefix, "target")[0]
-        model_line = next(line for line in header if line.startswith("##madcatsModel="))
-        self.assertIn(f"overdispersion {report['used']:g}, estimated from the read counts", model_line)
+        self.assertIn(f"overdispersion {report['used']:g}, estimated from the read counts", self.model_line(prefix))
 
         # The estimate is the default.
         self.call_madc(madc, "--ploidy", "4")
@@ -1350,9 +1359,8 @@ class CommandBehaviourTests(CommandTestCase):
         self.assertEqual(report["markers_compared"], 120)
         self.assertIsNone(report["reason_none_used"])
         self.assertIn(f"the {report['neighbours_per_sample']} samples most like it", self.stderr)
-        header, _, records = self.vcf(prefix, "target")
-        model_line = next(line for line in header if line.startswith("##madcatsModel="))
-        self.assertIn(f"the {report['neighbours_per_sample']} samples most like it", model_line)
+        self.assertIn(f"the {report['neighbours_per_sample']} samples most like it", self.model_line(prefix))
+        records = self.vcf(prefix, "target")[2]
         structure_genotypes = [sample["GT"] for record in records for sample in record["samples"]]
 
         hwe_prefix = self.dir / "hwe"
@@ -1382,17 +1390,12 @@ class CommandBehaviourTests(CommandTestCase):
 
     def test_structure_prior_cannot_be_combined_with_a_fitted_bias(self):
         madc = self.write_madc([("M1", "Ref", REF_TAG, [9, 9]), ("M1", "Alt", ALT_TAG, [9, 9])], ["s1", "s2"])
-        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as stderr:
-            madcats.main(["call", "--madc", str(madc), "--output-prefix", str(self.dir / "x"), "--prior", "structure",
-                          "--allele-bias", "fit"])
-        self.assertIn("cannot be combined with --prior structure", stderr.getvalue())
+        message = self.call_error(madc, "--prior", "structure", "--allele-bias", "fit")
+        self.assertIn("cannot be combined with --prior structure", message)
 
     def test_selfing_rate_needs_the_hwe_prior(self):
         madc = self.write_madc([("M1", "Ref", REF_TAG, [9, 9]), ("M1", "Alt", ALT_TAG, [9, 9])], ["s1", "s2"])
-        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as stderr:
-            madcats.main(["call", "--madc", str(madc), "--output-prefix", str(self.dir / "x"), "--prior", "uniform",
-                          "--selfing-rate", "0.5"])
-        self.assertIn("--prior hwe only", stderr.getvalue())
+        self.assertIn("--prior hwe only", self.call_error(madc, "--prior", "uniform", "--selfing-rate", "0.5"))
 
     def test_overdispersion_auto_falls_back_on_a_small_table(self):
         madc = self.write_madc(
@@ -1415,8 +1418,7 @@ class CommandBehaviourTests(CommandTestCase):
         self.assertIn("0.005", background["by_rate"])
         self.assertIn(self.qc["overdispersion"]["used"], (30, 40, 50))
         self.assertIn("Estimated background-read rate: 0.005", self.stderr)
-        model_line = next(line for line in self.vcf(prefix, "target")[0] if line.startswith("##madcatsModel="))
-        self.assertIn("background-read rate 0.005, estimated from the read counts", model_line)
+        self.assertIn("background-read rate 0.005, estimated from the read counts", self.model_line(prefix))
 
         self.call_madc(madc, "--ploidy", "4", "--background-rate", "0.01", "--overdispersion", "25")
         self.assertEqual(self.qc["background_rate"], {"requested": 0.01, "used": 0.01})
@@ -1499,7 +1501,7 @@ class CommandBehaviourTests(CommandTestCase):
         report = self.qc["overdispersion"]
         self.assertEqual((report["at_limit"], report["used"]), ("lowest", call.FALLBACK_OVERDISPERSION))
         self.assertIn("no sample is heterozygous", self.stderr)
-        model_line = next(line for line in self.vcf(prefix, "target")[0] if line.startswith("##madcatsModel="))
+        model_line = self.model_line(prefix)
         # The overdispersion is the fallback value; the background-read rate was still estimated.
         self.assertIn("(overdispersion 9, contamination rate", model_line)
         self.assertEqual(self.qc["background_rate"]["estimate"], self.qc["background_rate"]["used"])
@@ -1524,9 +1526,7 @@ class CommandBehaviourTests(CommandTestCase):
 
     def test_repeated_sample_names_are_an_error(self):
         madc = self.write_madc([("M1", "Ref", REF_TAG, [1, 2]), ("M1", "Alt", ALT_TAG, [1, 2])], ["s1", "s1"])
-        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as stderr:
-            madcats.main(["call", "--madc", str(madc), "--output-prefix", str(self.dir / "x")])
-        self.assertIn("repeated sample names", stderr.getvalue())
+        self.assertIn("repeated sample names", self.call_error(madc))
 
     def test_ploidy_file_errors(self):
         for content, message in (("s1\tfour\n", "not a whole number"), ("s1\t4\ns1\t2\n", "more than once")):
