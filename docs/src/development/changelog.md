@@ -31,12 +31,13 @@ Notable changes by version. Measurements behind each change are in the
   92.7%). Against SNP-array genotypes of 85 tetraploid potato clones it raised the share of matching
   dosages from 92.3% to 96.6% (updog: 96.7%). The VCF gains `INFO/BIAS`, and `PREFIX.bias.csv`
   lists each fit.
-- `call --allele-bias auto` fits the bias as `fit` does and keeps it only for the records where it
-  raises the log-likelihood of the read counts by 10 or more over no bias; the others are called
-  without one. Against `fit`, on potato it keeps the gain (96.5% against 96.6% of array dosages
-  matched) and on polyploids pooled from real diploid reads, which have no bias, it removes the
-  loss (hexaploids at 50 reads: 77.6% right, as without a bias, against 69.8%). The bias table
-  gains a `Gain` column.
+- `call --allele-bias auto` fits the bias as `fit` does and calls with it only the records where
+  it raises the log-likelihood of the read counts by 10 or more over no bias; the others are
+  called without one. Against `fit`, on potato it keeps the gain (96.5% against 96.6% of array
+  dosages matched) and on polyploids pooled from real diploid reads, which have no bias, it
+  removes the loss (hexaploids at 50 reads: 77.6% right, as without a bias, against 69.8%). Every
+  two-allele record still carries its fitted bias in `INFO/BIAS`; one called without it is flagged
+  `INFO/BIASUNUSED`. The bias table gains `Gain` and `Used` columns.
 - `call` estimates a background-read rate (`--background-rate auto`, the default) together with
   the overdispersion: the share of reads that show an allele they did not come from. It replaces
   polyRAD's contamination rate, which is now 0 unless set, because contamination cannot account for

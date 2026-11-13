@@ -2732,6 +2732,12 @@ Records that keep a bias at margins 0, 2, 5, 10 and 20: potato 1,513, 1,153,
 - The rule is now `--allele-bias auto`, with a margin of 10
   (`BIAS_AUTO_MIN_GAIN`). A record that gives its bias up is called exactly as
   without one, since the call at a bias of 1 is among those the search makes.
+  Its fitted bias is still written: `INFO/BIAS` and the bias table hold the
+  fit for every two-allele record, the same values a run with `fit` writes,
+  and a record called without it carries `INFO/BIASUNUSED` (`Used` 0 in the
+  table). On the potato data 755 of 1,544 records are called without their
+  bias; 26 of those have a fitted bias outside 0.8 to 1.25, down to 0.37,
+  which a filter on the bias would not see if the field held the bias used.
   With the read model estimated by the run itself, `auto` gives the figures
   of the margin-10 column for all five data sets, and on the potato data the
   same records and bias table as the scratch copy.

@@ -176,31 +176,31 @@ class AllelicBiasTests(unittest.TestCase):
         self.assertEqual(result.allele_biases, [1.0, 1.0, 1.0])
         self.assertIsNone(result.bias_fit)
 
-    def test_a_bias_is_kept_only_where_it_gains_the_margin(self):
+    def test_a_bias_is_used_only_where_it_gains_the_margin(self):
         ploidies = [4] * 150
         always = call.ModelSettings(overdispersion=60, fit_allele_bias=True)
         with_margin = call.ModelSettings(
             overdispersion=60, fit_allele_bias=True, min_bias_gain=call.BIAS_AUTO_MIN_GAIN
         )
-        # A marker simulated with a strong bias gains far more than the margin and keeps its fit.
+        # A marker simulated with a strong bias gains far more than the margin and is called with its fit.
         biased = simulated_two_allele_markers(60, 4, markers=1, samples=150, bias=0.5, seed=21)[0]
-        kept = call.call_record(biased, ploidies, with_margin)
-        self.assertGreater(kept.bias_fit.gain, call.BIAS_AUTO_MIN_GAIN)
-        self.assertEqual(kept.allele_biases, call.call_record(biased, ploidies, always).allele_biases)
-        # A marker simulated without bias is fitted a bias near 1 that gains little; the
-        # record is then called exactly as it is without a bias.
+        with_bias = call.call_record(biased, ploidies, with_margin)
+        self.assertGreater(with_bias.bias_fit.gain, call.BIAS_AUTO_MIN_GAIN)
+        self.assertTrue(with_bias.bias_fit.used)
+        self.assertEqual(with_bias.allele_biases, call.call_record(biased, ploidies, always).allele_biases)
+        # A marker simulated without bias is fitted a bias near 1 that gains little.  The
+        # record is then called exactly as it is without a bias, and the fit is still reported.
         unbiased = simulated_two_allele_markers(60, 4, markers=1, samples=150, seed=9)[0]
         fitted = call.call_record(unbiased, ploidies, always)
         self.assertNotEqual(fitted.allele_biases, [1.0, 1.0])
         self.assertLess(fitted.bias_fit.gain, call.BIAS_AUTO_MIN_GAIN)
-        given_up = call.call_record(unbiased, ploidies, with_margin)
+        self.assertTrue(fitted.bias_fit.used)
+        unused = call.call_record(unbiased, ploidies, with_margin)
         without = call.call_record(unbiased, ploidies, call.ModelSettings(overdispersion=60))
-        self.assertEqual(given_up.allele_biases, [1.0, 1.0])
-        self.assertEqual(given_up.bias_fit.log_bias, 0.0)
-        self.assertEqual(given_up.bias_fit.gain, fitted.bias_fit.gain)
-        self.assertFalse(given_up.bias_fit.at_limit)
-        self.assertEqual(given_up.posteriors, without.posteriors)
-        self.assertEqual(given_up.allele_frequencies, without.allele_frequencies)
+        self.assertEqual(unused.allele_biases, [1.0, 1.0])
+        self.assertEqual(unused.bias_fit, fitted.bias_fit._replace(used=False))
+        self.assertEqual(unused.posteriors, without.posteriors)
+        self.assertEqual(unused.allele_frequencies, without.allele_frequencies)
 
     def test_the_margin_cannot_be_negative(self):
         with self.assertRaisesRegex(ValueError, "min_bias_gain"):
@@ -1517,8 +1517,10 @@ class CommandBehaviourTests(CommandTestCase):
         summary = self.qc["allele_bias"]
         self.assertEqual((summary["records_fitted"], summary["at_search_limit"], summary["not_converged"]), (6, 0, 0))
         self.assertEqual(summary["outside_0.67_to_1.5"], 3)
-        self.assertEqual(summary["records_with_a_bias"], 6)
-        self.assertTrue(all(float(row["Gain"]) >= 0 for row in table))
+        self.assertEqual(summary["records_called_with_the_bias"], 6)
+        self.assertTrue(all(float(row["Gain"]) >= 0 and row["Used"] == "1" for row in table))
+        self.assertFalse(any("BIASUNUSED" in line for line in header))
+        self.assertFalse(any("BIASUNUSED" in record["INFO"] for record in records))
         # Haplotype records are not given a bias.
         haplotype_header, _, haplotype_records = self.vcf(prefix, "haplotype")
         self.assertFalse(any("ID=BIAS" in line for line in haplotype_header))
@@ -1528,7 +1530,7 @@ class CommandBehaviourTests(CommandTestCase):
         self.assertEqual(self.qc["allele_bias"], {})
         self.assertFalse(Path(str(self.dir / "calls") + ".bias.csv").exists() and self.qc["outputs"]["bias_table"])
 
-    def test_allele_bias_auto_keeps_the_bias_of_the_biased_records_only(self):
+    def test_allele_bias_auto_calls_only_the_biased_records_with_their_bias(self):
         biased = simulated_two_allele_markers(60, 4, markers=3, samples=60, bias=0.5, seed=8)
         unbiased = simulated_two_allele_markers(60, 4, markers=3, samples=60, seed=9)
         madc = self.madc_from_simulation(biased + unbiased)
@@ -1536,24 +1538,33 @@ class CommandBehaviourTests(CommandTestCase):
         without_records = self.vcf(self.call_madc(madc, *options), "target")[2]
         fit_prefix = self.call_madc(madc, *options, "--allele-bias", "fit")
         fit_records = self.vcf(fit_prefix, "target")[2]
+        with open(str(fit_prefix) + ".bias.csv", newline="") as handle:
+            fit_table = list(csv.DictReader(handle))
         prefix = self.call_madc(madc, *options, "--allele-bias", "auto")
         header, _, records = self.vcf(prefix, "target")
-        self.assertTrue(any("kept where it raises the log-likelihood by 10 or more" in line for line in header))
+        self.assertTrue(any("used where it raises the log-likelihood by 10 or more" in line for line in header))
+        self.assertTrue(any(line.startswith("##INFO=<ID=BIASUNUSED,Number=0,Type=Flag") for line in header))
         with open(str(prefix) + ".bias.csv", newline="") as handle:
             table = list(csv.DictReader(handle))
+        # Every record reports the bias fitted to it, the same as a run that uses them all.
+        self.assertEqual([row["Bias"] for row in table], [row["Bias"] for row in fit_table])
+        self.assertEqual([row["Gain"] for row in table], [row["Gain"] for row in fit_table])
+        for row, record in zip(table, records):
+            self.assertIn("BIAS=" + format(round(float(row["Bias"]), 3), "g"), record["INFO"].split(";"))
         # The three biased records gain more than the margin and are called as with fit.
         for row, record, fit_record in zip(table[:3], records[:3], fit_records[:3]):
             self.assertGreater(float(row["Gain"]), call.BIAS_AUTO_MIN_GAIN)
+            self.assertEqual(row["Used"], "1")
             self.assertAlmostEqual(float(row["Bias"]), 2.0, delta=0.4)
             self.assertEqual(record, fit_record)
-        # The three others give the bias up: a bias of 1, and the genotypes of a run without one.
+        # The three others are marked, and have the genotypes of a run without a bias.
         for row, record, without_record in zip(table[3:], records[3:], without_records[3:]):
             self.assertLess(float(row["Gain"]), call.BIAS_AUTO_MIN_GAIN)
-            self.assertEqual(float(row["Bias"]), 1.0)
-            self.assertIn("BIAS=1", record["INFO"].split(";"))
+            self.assertEqual(row["Used"], "0")
+            self.assertIn("BIASUNUSED", record["INFO"].split(";"))
             self.assertEqual(record["samples"], without_record["samples"])
         summary = self.qc["allele_bias"]
-        self.assertEqual((summary["records_fitted"], summary["records_with_a_bias"]), (6, 3))
+        self.assertEqual((summary["records_fitted"], summary["records_called_with_the_bias"]), (6, 3))
         self.assertEqual(self.qc["parameters"]["allele_bias"], "auto")
 
     def test_overdispersion_auto_falls_back_for_inbred_samples(self):
