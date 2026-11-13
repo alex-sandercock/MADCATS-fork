@@ -3289,81 +3289,86 @@ def add_call_command(subparsers) -> None:
         "call",
         help="call genotypes from a MADC and write target, all-variant or haplotype VCFs",
         description=(
-            "Estimate each sample's genotype from the read counts in a MADC and write VCFs. --vcf chooses the "
-            "record types: target (the designed variant of each marker; the default), all (targets plus other "
-            "base substitutions in the tags) and haplotype (whole tag sequences as alleles). Each type goes to "
-            "its own file. Ploidy can differ between samples. The model is adapted from polyRAD (a "
-            "beta-binomial likelihood of the read counts, with a prior chosen by --prior), with updog's allelic "
-            "bias, read-error term and norm prior. Coordinates are "
-            "marker-local: CHROM is the marker and POS a position on its Ref tag. Reads MADCs from generate, "
-            "vendor DArT MADCs and HapApp fixed-allele-ID MADCs."
+            "Estimate each sample's genotype from the read counts in a MADC and write one VCF for each record "
+            "type chosen with --vcf. Ploidy can differ between samples. The model is adapted from polyRAD "
+            "(beta-binomial likelihood, Hardy-Weinberg prior) and updog (allelic bias, read-error term, norm "
+            "prior). Coordinates are marker-local: CHROM is the marker and POS a position on its Ref tag."
         ),
     )
-    calling.add_argument(
+
+    files = calling.add_argument_group("input and output")
+    files.add_argument(
         "--madc",
         required=True,
         help=(
-            "MADC to call from: from generate or filter-paralogs, a vendor DArT MADC (with or without its "
-            "starred preamble), or a HapApp fixed-allele-ID MADC"
+            "MADC to call from, plain or gzipped: one written by generate or filter-paralogs, a vendor DArT "
+            "MADC (with or without its starred preamble) or a HapApp fixed-allele-ID MADC"
         ),
     )
-    calling.add_argument(
+    files.add_argument(
         "--output-prefix",
         required=True,
+        metavar="PREFIX",
         help=(
-            "path prefix of the outputs: PREFIX.targets.vcf, PREFIX.all.vcf, PREFIX.haplotypes.vcf with "
-            "PREFIX.haplotypes.alleles.csv, PREFIX.bias.csv when a bias is fitted, and PREFIX.qc.json"
+            "path prefix of the outputs: PREFIX.targets.vcf, PREFIX.all.vcf and PREFIX.haplotypes.vcf (with "
+            "PREFIX.haplotypes.alleles.csv) as chosen by --vcf, PREFIX.bias.csv when an allelic bias is "
+            "fitted, and PREFIX.qc.json"
         ),
     )
-    calling.add_argument(
+    files.add_argument(
         "--vcf",
         nargs="+",
         choices=VCF_TYPES,
         default=[VCF_TARGET],
-        help="VCF types to write, one file each; give one or more (default: target)",
-    )
-    calling.add_argument(
-        "--reference-tags",
+        metavar="TYPE",
         help=(
-            "reference-tag CSV of the panel (from design or infer-design). Its Ref and Alt tags and "
-            "VariantPositionInTagSequence identify each marker's target; without it the MADC's Ref and Alt "
-            "rows are used, and a marker whose two tags differ in more than one place gets no target record"
+            "record types to write, one VCF each; one or more of target (the variant each marker was designed "
+            "for), all (the targets plus every other base substitution in the tags) and haplotype (whole tag "
+            f"sequences as alleles) (default: {VCF_TARGET})"
         ),
     )
-    calling.add_argument(
+    files.add_argument("--qc-output", help="QC JSON (default: PREFIX.qc.json)")
+
+    panel = calling.add_argument_group("samples and panel")
+    panel.add_argument(
         "--ploidy", type=positive_int, default=DEFAULT_PLOIDY,
         help=f"ploidy of every sample not listed in --ploidy-file (default: {DEFAULT_PLOIDY})",
     )
-    calling.add_argument(
+    panel.add_argument(
         "--ploidy-file",
         help="two-column table of sample name and ploidy, tab- or comma-separated, with or without a header line",
     )
-    calling.add_argument(
+    panel.add_argument(
+        "--reference-tags",
+        help=(
+            "reference-tag CSV of the panel (from design or infer-design); its tags and "
+            "VariantPositionInTagSequence column identify each marker's target. Without it the MADC's Ref and "
+            "Alt rows are used, and a marker whose two tags differ in more than one place gets no target record"
+        ),
+    )
+    panel.add_argument(
+        "--max-indel-length", type=nonnegative_int, default=GAP_BAND_DEFAULT,
+        help=(
+            "widest insertion or deletion considered when a row is compared with the Ref tag; use the value "
+            f"given to generate (default: {GAP_BAND_DEFAULT})"
+        ),
+    )
+
+    model = calling.add_argument_group("model")
+    model.add_argument(
         "--prior",
         choices=PRIOR_CHOICES,
         default=PRIOR_HWE,
         help=(
-            "genotype prior: uniform (every dosage equally probable), hwe (Hardy-Weinberg proportions for "
+            "genotype prior: uniform (every dosage equally probable), hwe (Hardy-Weinberg proportions at "
             "allele frequencies estimated from all samples; assumes random mating and polysomic inheritance), "
-            "norm (a normal shape over the dosages fitted per record and ploidy, as in updog; does not "
-            "assume random mating) or structure (Hardy-Weinberg proportions at each sample's own allele "
-            "frequencies, taken from the samples most like it; for subpopulations, clines and families, and "
-            f"of most use at low read depth) (default: {PRIOR_HWE})"
+            "norm (a normal shape over the dosages, fitted per record and ploidy as in updog; does not assume "
+            "random mating) or structure (Hardy-Weinberg proportions at each sample's own allele frequencies, "
+            "estimated from the samples most like it; for subpopulations, clines and families) "
+            f"(default: {PRIOR_HWE})"
         ),
     )
-    calling.add_argument(
-        "--allele-bias",
-        choices=("off", "fit", "auto"),
-        default="off",
-        help=(
-            "allelic bias, where one allele yields more reads per copy than the other: off assumes none; fit "
-            "estimates it for each record with two alleles, as updog does; auto estimates it likewise and calls "
-            f"with it only the records whose read counts it explains better by a margin ({BIAS_AUTO_MIN_GAIN:g} "
-            "in log-likelihood), the others without one. fit and auto take several times longer "
-            "(default: off)"
-        ),
-    )
-    calling.add_argument(
+    model.add_argument(
         "--selfing-rate", type=_fraction, default=0.0,
         help=(
             "with --prior hwe, the share of individuals that come from self-fertilisation, from 0 (random "
@@ -3371,7 +3376,19 @@ def add_call_command(subparsers) -> None:
             "the two homozygous ones (default: 0)"
         ),
     )
-    calling.add_argument(
+    model.add_argument(
+        "--allele-bias",
+        choices=("off", "fit", "auto"),
+        default="off",
+        help=(
+            "allelic bias, where one allele yields more reads per copy than the other: off (none assumed), fit "
+            "(estimated for every record with two alleles, as in updog, and used) or auto (estimated the same "
+            f"way, but used only for records where it raises the log-likelihood by {BIAS_AUTO_MIN_GAIN:g} or "
+            "more; the rest are called without it). fit and auto take several times as long and cannot be "
+            "combined with --prior structure (default: off)"
+        ),
+    )
+    model.add_argument(
         "--overdispersion", type=_number_or_auto(_positive_float), default=AUTO,
         help=(
             "beta-binomial overdispersion parameter, as in polyRAD: lower values allow read fractions to stray "
@@ -3380,15 +3397,7 @@ def add_call_command(subparsers) -> None:
             f"(default: {AUTO})"
         ),
     )
-    calling.add_argument(
-        "--contamination-rate", type=proper_fraction, default=0.0,
-        help=(
-            "polyRAD's contamination: expected share of a sample's reads that come from other samples and show "
-            "an allele at its frequency among them. --background-rate covers the same reads and more, so this "
-            f"is off unless set; polyRAD uses {POLYRAD_CONTAMINATION_RATE:g} (default: 0)"
-        ),
-    )
-    calling.add_argument(
+    model.add_argument(
         "--background-rate", type=_number_or_auto(_background_rate), default=AUTO,
         help=(
             "probability that a read shows one allele although it came from another: sequencing and "
@@ -3397,59 +3406,55 @@ def add_call_command(subparsers) -> None:
             f"a number (default: {AUTO})"
         ),
     )
-    calling.add_argument(
-        "--tol", type=_positive_float, default=DEFAULT_TOLERANCE,
+    model.add_argument(
+        "--contamination-rate", type=proper_fraction, default=0.0,
         help=(
-            "with --prior hwe, norm or structure, stop iterating a record once its allele frequencies (with "
-            "norm, also its prior probabilities; with structure, also the samples' own allele frequencies) "
-            f"change by no more than this (default: {DEFAULT_TOLERANCE:g})"
+            "polyRAD's contamination term: the expected share of a sample's reads that come from other "
+            "samples. --background-rate already covers such reads, so this is 0 unless set; polyRAD's own "
+            f"default is {POLYRAD_CONTAMINATION_RATE:g} (default: 0)"
         ),
     )
-    calling.add_argument(
+    model.add_argument(
+        "--tol", type=_positive_float, default=DEFAULT_TOLERANCE,
+        help=(
+            "with --prior hwe, norm or structure, stop iterating a record once its allele frequencies (and, "
+            f"with norm, its prior probabilities) change by no more than this (default: {DEFAULT_TOLERANCE:g})"
+        ),
+    )
+    model.add_argument(
         "--max-iterations", type=positive_int, default=DEFAULT_MAX_ITERATIONS,
         help=(
             "with --prior hwe, norm or structure, the most iterations a record may take; with structure, in "
             f"each of its two stages (default: {DEFAULT_MAX_ITERATIONS})"
         ),
     )
-    calling.add_argument(
+
+    filters = calling.add_argument_group("filters (a genotype that fails one is written as missing)")
+    filters.add_argument(
         "--min-dp", type=nonnegative_int, default=DEFAULT_MIN_DEPTH,
-        help=(
-            "write a genotype as missing when the sample has fewer reads than this in the record "
-            f"(default: {DEFAULT_MIN_DEPTH})"
-        ),
+        help=f"fewest reads a sample needs in a record (default: {DEFAULT_MIN_DEPTH})",
     )
-    calling.add_argument(
+    filters.add_argument(
         "--min-gq", type=nonnegative_int, default=DEFAULT_MIN_GENOTYPE_QUALITY,
-        help=(
-            "two-allele records: write a genotype as missing when its genotype quality is below this "
-            f"(default: {DEFAULT_MIN_GENOTYPE_QUALITY})"
-        ),
+        help=f"two-allele records: lowest genotype quality, GQ (default: {DEFAULT_MIN_GENOTYPE_QUALITY})",
     )
-    calling.add_argument(
+    filters.add_argument(
         "--min-marginal-posterior", type=_fraction, default=DEFAULT_MIN_MARGINAL_POSTERIOR,
         help=(
-            "haplotype records and other records with more than two alleles: write a genotype as missing when "
-            "MPC, the lowest marginal posterior among its called dosages, is below this "
-            f"(default: {DEFAULT_MIN_MARGINAL_POSTERIOR:g})"
+            "haplotype records and other records with more than two alleles: lowest MPC, the smallest "
+            f"marginal posterior among the called dosages (default: {DEFAULT_MIN_MARGINAL_POSTERIOR:g})"
         ),
     )
-    calling.add_argument(
+    filters.add_argument(
         "--max-other-fraction", type=_fraction, default=None,
         help=(
-            "target and all records: write a genotype as missing when more than this share of the sample's "
-            "reads was left out of the call (XD) (default: no limit)"
+            "target and all records: largest share of the sample's reads that may be left out of the call, "
+            "XD (default: no limit)"
         ),
     )
-    calling.add_argument(
-        "--max-indel-length", type=nonnegative_int, default=GAP_BAND_DEFAULT,
-        help=(
-            "widest insertion or deletion considered when a row is compared with the Ref tag; use the value "
-            f"given to generate (default: {GAP_BAND_DEFAULT})"
-        ),
-    )
-    calling.add_argument("--qc-output", help="QC JSON (default: PREFIX.qc.json)")
-    calling.add_argument(
+
+    performance = calling.add_argument_group("performance")
+    performance.add_argument(
         "--jobs", type=positive_int, default=_default_jobs(),
         help="worker processes; markers are called independently (default: up to 4)",
     )

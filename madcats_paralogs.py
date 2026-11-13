@@ -970,25 +970,28 @@ def add_filter_paralogs_command(subparsers) -> None:
         "filter-paralogs",
         help="drop or flag MADC rows that a reference genome places at another locus (needs mappy)",
         description=(
-            "Clean a MADC with a reference genome, for panels where paralogous copies of a target co-amplify "
-            "with it. Each marker is placed by aligning its Ref tag and, for CHROM_POS CloneIDs, by that "
-            "position (see --clone-positions). Every haplotype is then aligned and labelled on_target, paralog "
-            "(it aligns better "
-            "elsewhere) or ambiguous (it aligns equally well at the marker and elsewhere). Paralog and "
-            "ambiguous rows are dropped or flagged; canonical Ref and Alt rows are always kept. Reads MADCs "
-            "from generate, vendor DArT MADCs and HapApp fixed-allele-ID MADCs. Needs the mappy aligner: "
-            "pip install 'madcats[genome]'."
+            "Drop or flag the rows of a MADC that a reference genome places at another locus, for panels where "
+            "paralogous copies of a target co-amplify with it. Each marker is placed on the genome by its Ref "
+            "tag and, for CHROM_POS CloneIDs, by that position. Every row's sequence is then aligned and "
+            "labelled on_target, paralog (it aligns better elsewhere) or ambiguous (it aligns equally well at "
+            "the marker and elsewhere). Needs the mappy aligner: pip install 'madcats[genome]'."
         ),
     )
     filtering.add_argument(
         "--madc",
         required=True,
         help=(
-            "MADC to clean: from generate, a vendor DArT MADC (with or without its starred preamble), or a "
-            "HapApp fixed-allele-ID MADC"
+            "MADC to clean, plain or gzipped: one written by generate, a vendor DArT MADC (with or without its "
+            "starred preamble) or a HapApp fixed-allele-ID MADC"
         ),
     )
-    filtering.add_argument("--genome", help="reference genome FASTA (optionally gzipped)")
+    filtering.add_argument(
+        "--genome",
+        help=(
+            "reference genome FASTA, plain or gzipped. It should hold each locus once: of a haplotype-resolved "
+            "assembly, give one set of chromosomes. Not needed when --genome-index exists"
+        ),
+    )
     filtering.add_argument(
         "--genome-index",
         help=(
@@ -1001,27 +1004,36 @@ def add_filter_paralogs_command(subparsers) -> None:
         choices=("use", "ignore"),
         default="use",
         help=(
-            "CHROM_POS CloneIDs: use them as positions on the genome given, to choose between equal-best Ref-tag "
-            "sites, stand in for Ref tags that do not align, and place a marker whose Ref tag aligns better "
-            "elsewhere at its CloneID position (or leave it unplaced if the tag does not align there); or ignore "
-            "them when they refer to another assembly (default: use)"
+            "CloneIDs of the form CHROM_POS: use takes them as positions on this genome and places each marker "
+            "there, leaving it unplaced when its Ref tag aligns only elsewhere; ignore places markers by "
+            "their Ref tag alone, for CloneIDs that refer to another assembly (default: use)"
         ),
     )
-    filtering.add_argument("--output", required=True, help="cleaned MADC to write")
+    filtering.add_argument(
+        "--output",
+        required=True,
+        help=(
+            "cleaned MADC to write. Written beside it: OUTPUT.genome_labels.csv (every input row's label and "
+            "scores, and what was done with it) and OUTPUT.genome_markers.csv (where each marker was placed)"
+        ),
+    )
     filtering.add_argument(
         "--paralogs",
         choices=("drop", "flag"),
         default="drop",
-        help="paralog rows: drop them, or keep them labelled in the GenomeLabel column (default: drop)",
+        help=(
+            "paralog rows: drop them, or flag them (keep them, and write every row's label in a GenomeLabel "
+            "column that takes the place of PICRef). Ref and Alt rows are never dropped, nor are rows that do "
+            "not align or whose marker could not be placed (default: drop)"
+        ),
     )
     filtering.add_argument(
         "--ambiguous",
         choices=("drop", "flag", "keep"),
         default="drop",
         help=(
-            "rows that align equally well at the marker and elsewhere, and rows of a marker whose Ref tag has "
-            "several equal-best sites: drop, flag, or keep (default: drop). A kept row still carries its label "
-            "when --paralogs flag adds the GenomeLabel column"
+            "ambiguous rows, which include the rows of a marker whose Ref tag has several equal-best sites: "
+            "drop them, flag them as --paralogs flag does, or keep them (default: drop)"
         ),
     )
     filtering.add_argument("--qc-output", help="QC JSON (default: OUTPUT.qc.json)")
