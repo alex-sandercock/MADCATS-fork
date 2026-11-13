@@ -81,6 +81,8 @@ design (e.g. `46:C>G`).
 - input paths
 - per-sample read accounting: records read, reads assigned, gapped and partial assignments, reads
   in emitted rows, reads moved by denoising, reads dropped and why
+- the tile families (`tile_families`) and the extra credits they add (`tile_extra_credits_*`; see
+  [Read Accounting](evidence-model.md#read-accounting))
 - row counts by category, by evidence route, and by `marker_types`
 - the variants sidecar path
 

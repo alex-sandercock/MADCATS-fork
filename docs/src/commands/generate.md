@@ -19,8 +19,9 @@ grouped by stage:
 2. Assign each read to a marker by its left-primer/anchor prefix, keep the fixed-length tag, and
    accept it if it reaches `--min-identity` to the marker's Ref or Alt tag. Reads that fail for
    every marker get one more try with a gapped alignment under the same edit limit, so undesigned
-   indels are counted. Reads shorter than the tag are added to a full-length allele whose start
-   they match. Results are cached per sample.
+   indels are counted. A read that fits several tiled markers of one amplicon equally is credited
+   to each of them; other ties are dropped. Reads shorter than the tag are added to a full-length
+   allele whose start they match. Results are cached per sample.
 3. Count exact tag sequences per sample.
 4. Apply the evidence rules. Canonical Ref and Alt rows are always written; any other sequence is
    reported only if it passes an evidence route.
@@ -64,6 +65,7 @@ The [Evidence Model](../reference/evidence-model.md) explains stages 2–6 in de
 | `--primer-mismatches {0,1}` | 1 | Mismatches allowed while assigning a primer/anchor. With `0`, reads from Match haplotypes whose distinguishing SNP falls inside the anchor are lost |
 | `--gapped-rescue {on,off}` | `on` | Give reads that fail substitution-only identity one gapped alignment, so undesigned indels are counted |
 | `--max-indel-length <INT>` | 10 | Widest gap (alignment band) a gapped alignment may use |
+| `--tile-groups {auto,declared,off}` | `auto` | Link tiled markers (markers that read the same tag window of one amplicon), so a read is credited to every tile it fits instead of being dropped as a tie. `auto` links tiles declared with `LocusGroup` and detects undeclared ones; `declared` links only the declared ones; `off` links none. See [Tiled Markers](../getting-started/input-formats.md#tiled-markers) |
 | `--partial-read-mode {on,off}` | `on` | Add a read shorter than the tag to the one full-length allele (already passing the evidence rules) whose start it matches, only when it is longer than every prefix shared between that locus's alleles. `off` drops such reads |
 | `--min-partial-length <INT>` | tag length − 9 | Minimum length of a credited partial read |
 | `--cache-dir <DIR>` | none | Reusable per-sample count cache |

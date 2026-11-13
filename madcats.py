@@ -76,7 +76,10 @@ Pipeline stages (the ``generate`` command; see ``run_generate``):
    length tag, and accept it within the substitution-only identity envelope
    of the locus's Ref/Alt tags — or, when every candidate rejects it, under
    one gapped reading within the same edit budget, so undesigned indel
-   haplotypes are counted rather than dropped (``select_marker``).  Tags
+   haplotypes are counted rather than dropped (``select_markers``).  Tiles
+   are the one exception to one read per locus: they read the same tag
+   window of one amplicon (``tile_families``), so a read that fits several
+   tiles is credited to each, and the extra credits are counted apart.  Tags
    carrying an N are credited to the one N-free sequence they fit or
    dropped; they never become rows.  Counting exact observed sequences —
    never consensus-corrected ones — is what makes the output auditable
@@ -122,8 +125,8 @@ section opens with a banner comment:
    primer-free inference.
 4. Platform intake: pair merging, window location and freezing, tiling and
    routing, window-scan.
-5. Per-sample read assignment: ``PrimerIndex``, ``select_marker``,
-   ``process_sample`` and its cache.
+5. Per-sample read assignment: ``PrimerIndex``, ``tile_families``,
+   ``select_markers``, ``process_sample`` and its cache.
 6. Evidence, denoising and partial-read salvage: ``EvidenceRule``,
    ``collect_evidence``, ``finalize_counts``, ``apply_partial_reads``.
 7. Classification and annotation: ``classify_sequence``, ``variant_events``,
@@ -254,8 +257,9 @@ class Locus:
     # Markers sharing a locus_group are windows (tiles) of one physical
     # locus: normalize-reads locates reads to the group and routes them
     # among the member windows (--group-routing: one tile per read, or
-    # every fully covered tile).  Empty = the marker is its own group
-    # (the universal pre-0.9 case).
+    # every fully covered tile), and generate credits a read to every
+    # member that reads the same tag window (tile_families).  Empty = the
+    # marker is its own group (the universal pre-0.9 case).
     locus_group: str = ""
 
     @property
@@ -326,9 +330,10 @@ class AssignmentSettings:
     partial_min_length: int
     gap_band: int                   # --max-indel-length, or 0 with --gapped-rescue off
     leading_anchor: str = ""        # --leading-anchor: constant sequence preceding the amplicon in raw deliveries
+    tile_families: Tuple[Tuple[int, ...], ...] = ()  # --tile-groups: marker indices credited together (tile_families)
 
     def cache_arguments(self) -> Dict[str, object]:
-        return {
+        arguments: Dict[str, object] = {
             "tag_length": self.tag_length,
             "max_offtarget_mismatches": self.max_offtarget_mismatches,
             "gap_band": self.gap_band,
@@ -337,6 +342,12 @@ class AssignmentSettings:
             "leading_anchor": self.leading_anchor,
             "quality_thresholds": QUALITY_THRESHOLDS,
         }
+        # Keyed only when present: a panel without tiles is read exactly as
+        # before tile crediting existed, so its caches stay valid, while any
+        # tile family (and any change to the families) gives a new fingerprint.
+        if self.tile_families:
+            arguments["tile_families"] = [list(family) for family in self.tile_families]
+        return arguments
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1079,6 +1090,7 @@ def build_panel(primer_csv: Path, probe_design: Path, tag_length: int) -> List[L
                 variant_pos=variant_pos,
                 ref_tag=ref_tag,
                 alt_tag=alt_tag,
+                locus_group=(designs[marker].get("LocusGroup") or "").strip(),
             )
         )
     return loci
@@ -2197,13 +2209,88 @@ def _write_cache(path: Path, result: SampleResult, source_stat: os.stat_result) 
     temporary.replace(path)
 
 
-def select_marker(
+def same_tag_window(a: Locus, b: Locus) -> bool:
+    """Do two markers read the same tag window of one amplicon?
+
+    True when their Ref tags have the same length and are IUPAC-compatible
+    at every position other than the two markers' own variant positions.  That
+    is what a DArTag tile looks like: tiles share a left primer (or one
+    primer extends the other), and each tile's tag carries the neighbouring
+    tiles' SNPs as ambiguity codes, so every read from the amplicon fits each
+    tile's tags equally well.  normalize-reads tiles excise different
+    windows of their locus and never pass.
+    """
+    if a.index == b.index or len(a.ref_tag) != len(b.ref_tag):
+        return False
+    exempt = (a.variant_pos, b.variant_pos)
+    return all(
+        position in exempt or bases_compatible(left, right)
+        for position, (left, right) in enumerate(zip(a.ref_tag, b.ref_tag))
+    )
+
+
+def tile_families(loci: Sequence[Locus], mode: str = "auto") -> Tuple[Tuple[int, ...], ...]:
+    """Markers whose reads ``generate`` credits together (``--tile-groups``).
+
+    Two markers are linked when they read the same tag window
+    (``same_tag_window``) and one's primer matches the start of the other's
+    tag, so one read reaches both; a family is a connected set of links.
+    ``declared`` links only markers that share a ``LocusGroup``; ``auto``
+    also links undeclared markers, but never two
+    markers declared in different groups; ``off`` links none.  Families are
+    sorted tuples of marker indices, members of two or more only.
+    """
+    if mode == "off":
+        return ()
+    primer_index = PrimerIndex(loci)
+    parent = list(range(len(loci)))
+
+    def root(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for locus in loci:
+        for other in primer_index.match(locus.ref_tag):
+            mate = loci[other]
+            declared = bool(locus.locus_group) and locus.locus_group == mate.locus_group
+            conflicting = bool(locus.locus_group and mate.locus_group) and not declared
+            if not (declared or (mode == "auto" and not conflicting)):
+                continue
+            if same_tag_window(locus, mate):
+                parent[root(other)] = root(locus.index)
+    members: Dict[int, List[int]] = defaultdict(list)
+    for locus in loci:
+        members[root(locus.index)].append(locus.index)
+    return tuple(sorted(tuple(group) for group in members.values() if len(group) > 1))
+
+
+def _gapped_edits(tag: str, locus: Locus, max_mismatches: int, gap_band: int) -> Optional[int]:
+    """Fewest edits of an accepted gapped reading of ``tag`` against the locus's
+    Ref or Alt tag, or ``None`` when neither reading is believed."""
+    best: Optional[int] = None
+    for template in (locus.ref_tag, locus.alt_tag):
+        if len(template) != len(tag):
+            continue
+        if gapped_prescreen(tag, template, gap_band) > max_mismatches:
+            continue
+        edits, substitutions, gap_bases, gap_events, _, _ = gapped_stats(tag, template, gap_band)
+        if edits > max_mismatches or not gapped_explanation_ok(substitutions, gap_bases, gap_events):
+            continue
+        if best is None or edits < best:
+            best = edits
+    return best
+
+
+def select_markers(
     tag: str,
     candidates: Sequence[int],
     loci: Sequence[Locus],
     max_mismatches: int,
     gap_band: int = 0,
-) -> Tuple[Optional[int], str]:
+    family_of: Optional[Mapping[int, Tuple[int, ...]]] = None,
+) -> Tuple[Tuple[int, ...], str]:
     """Resolve primer candidates by identity to the available tag prefix.
 
     Substitution-only identity decides first and is never overturned.  When
@@ -2216,7 +2303,16 @@ def select_marker(
     (few substitutions, few gap events); a co-amplified paralog reaches the
     budget through many substitutions and stays off-target.  A cheap exact
     lower bound (``gapped_prescreen``) skips the alignment for hopeless tags.
+
+    The best-fitting marker takes the read alone, and a tie is dropped as
+    ambiguous.  The exception is a tie in which every marker belongs to one
+    tile family (``family_of``, from ``tile_families``).  Tiles read one
+    amplicon, so the read is then credited to every family member it fits
+    within the budget (substitution-only, or by one gapped reading), as
+    running each tile in a panel of its own would.  A tie that crosses
+    families stays ambiguous.
     """
+    family_of = family_of or {}
     scored = []
     for marker_index in candidates:
         locus = loci[marker_index]
@@ -2229,34 +2325,52 @@ def select_marker(
             )
         scored.append((distance, marker_index))
     scored.sort()
+
+    def credited(ranked: Sequence[Tuple[int, int]]) -> Optional[Tuple[int, ...]]:
+        best_distance, best_marker = ranked[0]
+        family = family_of.get(best_marker, (best_marker,))
+        if any(distance == best_distance and marker not in family for distance, marker in ranked):
+            return None
+        if len(family) == 1:
+            return (best_marker,)
+        members = [marker for distance, marker in ranked if marker in family and distance <= max_mismatches]
+        if gap_band > 0:
+            fitted = set(members)
+            members += [
+                marker for _, marker in ranked
+                if marker in family and marker not in fitted
+                and _gapped_edits(tag, loci[marker], max_mismatches, gap_band) is not None
+            ]
+        return tuple(sorted(members))
+
     if scored and scored[0][0] <= max_mismatches:
-        if len(scored) > 1 and scored[0][0] == scored[1][0]:
-            return None, "ambiguous"
-        return scored[0][1], "assigned"
+        markers = credited(scored)
+        return (markers, "assigned") if markers else ((), "ambiguous")
     if gap_band <= 0 or not scored:
-        return None, "offtarget"
+        return (), "offtarget"
     gapped = []
     for marker_index in candidates:
-        locus = loci[marker_index]
-        best: Optional[int] = None
-        for template in (locus.ref_tag, locus.alt_tag):
-            if len(template) != len(tag):
-                continue
-            if gapped_prescreen(tag, template, gap_band) > max_mismatches:
-                continue
-            edits, substitutions, gap_bases, gap_events, _, _ = gapped_stats(tag, template, gap_band)
-            if edits > max_mismatches or not gapped_explanation_ok(substitutions, gap_bases, gap_events):
-                continue
-            if best is None or edits < best:
-                best = edits
-        if best is not None:
-            gapped.append((best, marker_index))
+        edits = _gapped_edits(tag, loci[marker_index], max_mismatches, gap_band)
+        if edits is not None:
+            gapped.append((edits, marker_index))
     gapped.sort()
     if not gapped:
-        return None, "offtarget"
-    if len(gapped) > 1 and gapped[0][0] == gapped[1][0]:
-        return None, "ambiguous"
-    return gapped[0][1], "assigned_gapped"
+        return (), "offtarget"
+    markers = credited(gapped)
+    return (markers, "assigned_gapped") if markers else ((), "ambiguous")
+
+
+def select_marker(
+    tag: str,
+    candidates: Sequence[int],
+    loci: Sequence[Locus],
+    max_mismatches: int,
+    gap_band: int = 0,
+) -> Tuple[Optional[int], str]:
+    """``select_markers`` without tile families: the one marker a read goes to, or
+    ``None`` with the reason it went nowhere."""
+    markers, status = select_markers(tag, candidates, loci, max_mismatches, gap_band)
+    return (markers[0] if markers else None), status
 
 
 def resolve_n_tags(
@@ -2330,8 +2444,13 @@ def process_sample(
     accepted for exactly one locus when its tag lies within the identity
     envelope of that locus's Ref/Alt tags, or — when every candidate rejects
     it and ``settings.gap_band`` is positive — under one gapped reading within the
-    same edit budget (``select_marker``); ambiguous reads are dropped rather
-    than guessed.  Tags carrying an N are resolved at the end of the sample
+    same edit budget (``select_markers``); ambiguous reads are dropped rather
+    than guessed.  The one exception is a tile family
+    (``settings.tile_families``): a read that fits several tiles of one
+    amplicon is credited to each of them, ``reads_assigned`` still counts it
+    once, and the credits beyond the first are counted in
+    ``tile_extra_credits`` (``partial_tile_extra_credits`` for reads shorter
+    than the tag).  Tags carrying an N are resolved at the end of the sample
     (``resolve_n_tags``) and never counted as haplotypes of their own.
     Alongside each count, a per-threshold vector of
     whole-tag-clean read tallies is kept so quality thresholds can change
@@ -2357,8 +2476,9 @@ def process_sample(
     # Amplicon reads repeat heavily, so the (deterministic) assignment decision
     # is memoized per unique sequence once a primer candidate list was found;
     # primer-less reads fail the trie walk cheaply and are not worth storing.
-    full_decisions: Dict[str, Tuple[Optional[int], str]] = {}
-    partial_decisions: Dict[str, Tuple[Optional[int], str]] = {}
+    full_decisions: Dict[str, Tuple[Tuple[int, ...], str]] = {}
+    partial_decisions: Dict[str, Tuple[Tuple[int, ...], str]] = {}
+    family_of = {member: family for family in settings.tile_families for member in family}
     for sequence, quality in fastq_records(fastq_path):
         qc["reads_total"] += 1
         if settings.leading_anchor:
@@ -2383,21 +2503,19 @@ def process_sample(
                 partial_max_mismatches = math.floor(
                     settings.max_offtarget_mismatches * len(sequence) / settings.tag_length
                 )
-                marker_index, status = select_marker(
-                    sequence, candidates, loci, partial_max_mismatches
+                markers, status = select_markers(
+                    sequence, candidates, loci, partial_max_mismatches, family_of=family_of
                 )
-                decision = (
-                    marker_index,
-                    "reads_partial" if marker_index is not None else f"reads_partial_{status}",
-                )
+                decision = (markers, "reads_partial" if markers else f"reads_partial_{status}")
                 partial_decisions[sequence] = decision
-            marker_index, qc_key = decision
+            markers, qc_key = decision
             qc[qc_key] += 1
-            if marker_index is None:
-                continue
-            key = (marker_index, sequence)
-            partial_counts[key] += 1
-            add_quality_support(partial_quality_support, key, quality)
+            if len(markers) > 1:
+                qc["partial_tile_extra_credits"] += len(markers) - 1
+            for marker_index in markers:
+                key = (marker_index, sequence)
+                partial_counts[key] += 1
+                add_quality_support(partial_quality_support, key, quality)
             continue
         tag = sequence[:settings.tag_length]
         decision = full_decisions.get(tag)
@@ -2406,19 +2524,23 @@ def process_sample(
             if not candidates:
                 qc["reads_no_primer"] += 1
                 continue
-            marker_index, status = select_marker(tag, candidates, loci, settings.max_offtarget_mismatches, settings.gap_band)
-            decision = (marker_index, status)
+            decision = select_markers(
+                tag, candidates, loci, settings.max_offtarget_mismatches, settings.gap_band, family_of
+            )
             full_decisions[tag] = decision
-        marker_index, status = decision
-        if marker_index is None:
+        markers, status = decision
+        if not markers:
             qc[f"reads_{status}"] += 1
             continue
         qc["reads_assigned"] += 1
         if status == "assigned_gapped":
             qc["reads_assigned_gapped"] += 1
-        key = (marker_index, tag)
-        exact_counts[key] += 1
-        add_quality_support(exact_quality_support, key, quality[:settings.tag_length])
+        if len(markers) > 1:
+            qc["tile_extra_credits"] += len(markers) - 1
+        for marker_index in markers:
+            key = (marker_index, tag)
+            exact_counts[key] += 1
+            add_quality_support(exact_quality_support, key, quality[:settings.tag_length])
 
     resolve_n_tags(exact_counts, exact_quality_support, loci, qc)
     qc["unique_full_tags_raw"] = len(exact_counts)
@@ -4496,7 +4618,7 @@ def _evidence_rule(args: argparse.Namespace) -> EvidenceRule:
     )
 
 
-def _assignment_settings(args: argparse.Namespace) -> AssignmentSettings:
+def _assignment_settings(args: argparse.Namespace, families: Tuple[Tuple[int, ...], ...] = ()) -> AssignmentSettings:
     """The read-pass settings, which are also the cache key."""
     return AssignmentSettings(
         tag_length=args.tag_length,
@@ -4505,7 +4627,38 @@ def _assignment_settings(args: argparse.Namespace) -> AssignmentSettings:
         partial_min_length=args.min_partial_length,
         gap_band=args.max_indel_length if args.gapped_rescue == "on" else 0,
         leading_anchor=(getattr(args, "leading_anchor", None) or "").upper(),
+        tile_families=families,
     )
+
+
+def _report_tile_families(loci: Sequence[Locus], families: Tuple[Tuple[int, ...], ...], mode: str) -> None:
+    """Name the tile families on stderr, and the tiles a narrower mode leaves tied."""
+    def describe(groups: Sequence[Tuple[int, ...]]) -> str:
+        shown = ", ".join("+".join(loci[index].marker for index in group) for group in groups[:5])
+        return shown + (f" and {len(groups) - 5} more" if len(groups) > 5 else "")
+
+    if families:
+        detected = sum(
+            1 for family in families
+            if not loci[family[0]].locus_group or len({loci[index].locus_group for index in family}) > 1
+        )
+        print(
+            f"generate: {len(families)} tile famil{'y' if len(families) == 1 else 'ies'} "
+            f"({sum(map(len, families))} markers; {detected} detected, {len(families) - detected} declared by "
+            f"LocusGroup); a read is credited to every tile it fits: "
+            f"{describe(families)}",
+            file=sys.stderr,
+        )
+    if mode != "auto":
+        linked = {index for family in families for index in family}
+        missed = [family for family in tile_families(loci, "auto") if not linked.issuperset(family)]
+        if missed:
+            print(
+                f"warning: {sum(map(len, missed))} markers read a tag window shared with another marker but are "
+                f"not linked with --tile-groups {mode}, so reads that fit them equally are dropped as ambiguous: "
+                f"{describe(missed)}; declare a LocusGroup or use --tile-groups auto",
+                file=sys.stderr,
+            )
 
 
 def _discover_samples(args: argparse.Namespace) -> Tuple[List[Sample], Path, List[Path]]:
@@ -4601,6 +4754,7 @@ def _generate_provenance(args: argparse.Namespace) -> str:
             f"primer_mismatches={args.primer_mismatches}",
             f"gapped_rescue={args.gapped_rescue}",
             f"max_indel_length={args.max_indel_length}",
+            f"tile_groups={args.tile_groups}",
             f"annotations={args.annotations}",
             f"partial_read_mode={args.partial_read_mode}",
             f"min_partial_length={args.min_partial_length}",
@@ -4643,6 +4797,11 @@ def _read_accounting(
         "reads_no_leading_anchor": total("reads_no_leading_anchor"),
         "reads_assigned_full_length": total("reads_assigned"),
         "reads_assigned_gapped": total("reads_assigned_gapped"),
+        # A read credited to several tiles of one family counts once above;
+        # these are the further credits.  From here on the ledger counts
+        # (marker, read) credits, which equal reads for a panel without tiles.
+        "tile_extra_credits_full_length": total("tile_extra_credits"),
+        "tile_extra_credits_partial": total("partial_tile_extra_credits"),
         "reads_n_mapped": total("reads_n_mapped"),
         "reads_n_dropped": total("reads_n_dropped"),
         "partial_reads_added_to_counts": partial_summary.get("reads_assigned", 0),
@@ -4663,6 +4822,7 @@ def _generate_parameters(args: argparse.Namespace, settings: AssignmentSettings,
         "primer_mismatches": args.primer_mismatches,
         "gapped_rescue": args.gapped_rescue,
         "max_indel_length": args.max_indel_length,
+        "tile_groups": args.tile_groups,
         "annotations": args.annotations,
         "partial_read_mode": args.partial_read_mode,
         "minimum_partial_length": args.min_partial_length,
@@ -4701,7 +4861,9 @@ def run_generate(args: argparse.Namespace) -> int:
         args, [Path(sample.fastq) for sample in samples],
         {tag[:LEADING_ANCHOR_PREFIX] for locus in loci for tag in (locus.ref_tag, locus.alt_tag)}, "generate",
     )
-    settings = _assignment_settings(args)
+    families = tile_families(loci, args.tile_groups)
+    _report_tile_families(loci, families, args.tile_groups)
+    settings = _assignment_settings(args, families)
     _warn_about_evidence_routes(rule, len(samples))
     results = _assign_samples(samples, loci, settings, args.cache_dir, args.jobs)
     # Stage 3: optional partial-read salvage; stages 4-5: evidence and denoising
@@ -4733,6 +4895,7 @@ def run_generate(args: argparse.Namespace) -> int:
         "panel_fingerprint_sha256": panel_fingerprint(loci),
         "parameters": _generate_parameters(args, settings, output),
         "loci": len(loci),
+        "tile_families": [[loci[index].marker for index in family] for family in families],
         "samples": len(samples),
         "read_accounting": _read_accounting(results, partial_summary, output_summary),
         "output_summary": output_summary,
@@ -5557,6 +5720,17 @@ def _add_generate_command(subparsers) -> None:
         help=f"widest gap (alignment band) a gapped alignment may use (default: {GAP_BAND_DEFAULT})",
     )
     assignment.add_argument(
+        "--tile-groups",
+        choices=("auto", "declared", "off"),
+        default="auto",
+        help=(
+            "link tiled markers (markers in one amplicon with a shared or nested left primer and tags that "
+            "agree except at their variant positions), so a read is credited to every tile it fits instead "
+            "of being dropped as a tie: auto links tiles declared with LocusGroup and detects undeclared "
+            "ones, declared links only the declared ones, off links none (default: auto)"
+        ),
+    )
+    assignment.add_argument(
         "--partial-read-mode",
         type=partial_read_mode,
         choices=("on", "off"),
@@ -5582,7 +5756,8 @@ def _add_generate_command(subparsers) -> None:
         help=(
             "folder for a reusable per-sample cache, so re-runs skip the read pass. The cache is rebuilt "
             "when the panel or --tag-length, --min-identity, --leading-anchor, --primer-mismatches, "
-            "--gapped-rescue, --max-indel-length or --min-partial-length changes"
+            "--gapped-rescue, --max-indel-length, --min-partial-length or the tile families "
+            "(--tile-groups) change"
         ),
     )
     _add_jobs_argument(assignment)

@@ -75,6 +75,18 @@ Notable changes by version. Measurements behind each change are in the
   wrap silently. A negative count with a maximum of exactly 127 is reported as this overflow, and
   both QC reports record it. Counts are never corrected, since the wrapped ones cannot be recovered.
   The lettuce 3K vendor MADC has 90,913 such cells across 1,108 markers.
+- Tiled markers: `generate` credits a read that fits several tiles of one amplicon to each of
+  them, instead of dropping it as a tie. Tiles are markers that read the same tag window: a shared
+  or nested left primer, and Ref tags that agree except at the markers' variant positions.
+  `--tile-groups auto|declared|off` (default `auto`) links `LocusGroup` members and detects
+  undeclared tiles. `LocusGroup` is now also read from the probe design on the design route.
+  Ties across families are still dropped. Extra credits are counted as `tile_extra_credits_*` in
+  the QC read accounting, so `reads_assigned_full_length` still counts each read once. On the
+  Lettuce 3K DArTag panel (376 samples), 13 markers in 6 amplicons now get, in one full-panel
+  run, the same table cells as running each tile in a panel of its own. 11 had zero reads before
+  (now 6,562–103,852 each); one pair with identical tags had split its reads 12,299 / 80,306 (now
+  about 112,400 each). All other markers' rows are unchanged.
+- The tile families are part of the per-sample cache key. Panels without tiles keep their caches.
 
 ## 0.13.0
 

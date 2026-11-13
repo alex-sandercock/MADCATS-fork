@@ -12,7 +12,8 @@ assignment anchor (the left primer, or a pseudo-primer prefix).
 1. A read is assigned to a marker by its prefix (the anchor). One mismatch is allowed by default
    (`--primer-mismatches 1`). Anchors that are prefixes of longer anchors are supported, and every
    anchor within the mismatch limit is considered. A read that matches several markers goes to the
-   one whose full tag it matches best; if that is a tie, the read is dropped as ambiguous.
+   one whose full tag it matches best; if that is a tie, the read is dropped as ambiguous. The one
+   exception is a tie within a family of [tiled markers](#tiled-markers).
 2. The read's first tag-length bases are kept if they have at least `--min-identity` (80%) identity
    to the marker's Ref or Alt tag, counting substitutions only.
 3. If the read fails for every candidate marker, it gets one gapped alignment under the same 20%
@@ -25,6 +26,27 @@ assignment anchor (the left primer, or a pseudo-primer prefix).
    than every prefix shared between two alleles of its locus. A partial read can therefore add to an
    allele's count, but it cannot create an allele or change an allele ratio. Reads shorter than
    `--min-partial-length` (tag length − 9) are never counted.
+
+### Tiled markers
+
+Tiles are markers that read the same tag window of one amplicon: DArTag panels place several
+target SNPs in one amplicon, under one shared (or nested) primer, and write each tile's tag with
+its neighbours' SNPs as IUPAC codes. A read from the amplicon fits every tile equally well, so the
+tie rule above would drop all of them and leave the tiles with zero reads. `--tile-groups` (default
+`auto`) links tiles into families, either declared with `LocusGroup` or detected; see
+[Tiled Markers](../getting-started/input-formats.md#tiled-markers) for the same-window test.
+
+When every marker tied for the best fit belongs to one family, the read came from that family's
+amplicon. It is credited to every member it fits within the identity limit, by substitution-only
+identity or through one gapped alignment when gapped rescue is on. Each member
+records the read's exact tag as its own observation. This holds whether or not the read tied; a
+family member it fits less well still gets it. So each tile gets the reads it would get in a panel
+of its own, as in DArT's pipeline. Partial reads follow the same rule. A tie between markers of different families, or between a family member and an unlinked
+marker, is still dropped as ambiguous.
+
+Tiles share their reads, so their counts are not independent: the same molecules support every
+member's row. Use the tiles' calls as one locus, or keep one tile per family, when an analysis
+assumes independent markers.
 
 ## Which Sequences Become Rows
 
@@ -122,3 +144,16 @@ The QC JSON accounts for every read: FASTQ records, reads assigned at full lengt
 through a gapped alignment (`reads_assigned_gapped`), partial reads credited, ambiguous or unmapped,
 reads moved by each denoising pass, reads dropped with low-evidence sequences, and per-sample
 `reads_in_emitted_rows`.
+
+A read credited to several tiles counts once in `reads_assigned_full_length` (per sample:
+`reads_assigned`). The further credits are counted separately, as `tile_extra_credits_full_length`
+and `tile_extra_credits_partial` (per sample: `tile_extra_credits`, `partial_tile_extra_credits`).
+From assignment on, the ledger counts (marker, read) credits: `reads_n_mapped`, `reads_n_dropped`,
+`partial_reads_added_to_counts`, `reads_in_final_count_table`, the denoising moves and
+`reads_in_emitted_rows`. For a panel without tiles, credits and reads are the same. The ledger
+balances as
+
+```
+reads_in_final_count_table = reads_assigned_full_length + tile_extra_credits_full_length
+                             − reads_n_dropped + partial_reads_added_to_counts
+```

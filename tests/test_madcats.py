@@ -1,5 +1,6 @@
 import argparse
 import csv
+import dataclasses
 import gzip
 import json
 import random
@@ -2214,3 +2215,108 @@ class VariantsTests(unittest.TestCase):
                     self.assertEqual(set(cells.values()), {"."})
                     self.assertFalse(sidecar.exists())
                     self.assertIsNone(qc["output_summary"]["variants"]["sidecar"])
+
+
+class TileFamilyTests(unittest.TestCase):
+    """Tiles: two target SNPs inside one amplicon, read through one shared tag window."""
+
+    # SNPs at 10 (C/T) and 20 (G/A); both tiles start at the same primer.
+    AMPLICON = "ACGTACGGTA" + "C" + "TTGACCAGT" + "G" + "ATCCGTAGC"
+
+    def tiles(self, groups=("", ""), iupac=True):
+        """Tile A (SNP at 10) and tile B (SNP at 20); with ``iupac`` each tag carries
+        the other tile's SNP as an ambiguity code, as DArTag panels write them."""
+        amplicon = self.AMPLICON
+        ref_a = amplicon[:20] + ("R" if iupac else "G") + amplicon[21:]
+        ref_b = amplicon[:10] + ("Y" if iupac else "C") + amplicon[11:]
+        primer = amplicon[:8]
+        return [
+            mp.Locus(0, "tileA", primer, "", "C", "T", 10, ref_a, ref_a[:10] + "T" + ref_a[11:], locus_group=groups[0]),
+            mp.Locus(1, "tileB", primer, "", "G", "A", 20, ref_b, ref_b[:20] + "A" + ref_b[21:], locus_group=groups[1]),
+        ]
+
+    def test_tied_read_is_credited_to_every_tile(self):
+        loci = self.tiles()
+        self.assertEqual(mp.tile_families(loci), ((0, 1),))
+        family_of = {0: (0, 1), 1: (0, 1)}
+        for read in (self.AMPLICON, self.AMPLICON[:10] + "T" + self.AMPLICON[11:]):
+            self.assertEqual(mp.select_markers(read, [0, 1], loci, 3, family_of=family_of), ((0, 1), "assigned"))
+            # Without the family the read ties and is dropped, as before.
+            self.assertEqual(mp.select_marker(read, [0, 1], loci, 3), (None, "ambiguous"))
+
+    def test_untied_read_reaches_every_tile_it_fits(self):
+        # Tiles with identical tags and no ambiguity codes: a read carrying
+        # tile A's Alt fits A exactly and B with one substitution.  It no longer
+        # goes to A alone; B sees it too, as it would in a panel of its own.
+        loci = self.tiles(iupac=False)
+        read = self.AMPLICON[:10] + "T" + self.AMPLICON[11:]
+        self.assertEqual(mp.select_marker(read, [0, 1], loci, 3), (0, "assigned"))
+        families = mp.tile_families(loci)
+        family_of = {member: family for family in families for member in family}
+        self.assertEqual(mp.select_markers(read, [0, 1], loci, 3, family_of=family_of), ((0, 1), "assigned"))
+
+    def test_tile_group_modes(self):
+        self.assertEqual(mp.tile_families(self.tiles(), "declared"), ())
+        self.assertEqual(mp.tile_families(self.tiles(), "off"), ())
+        self.assertEqual(mp.tile_families(self.tiles(("amp1", "amp1")), "declared"), ((0, 1),))
+        self.assertEqual(mp.tile_families(self.tiles(("amp1", "")), "auto"), ((0, 1),))
+        # Markers declared in different groups are never linked.
+        self.assertEqual(mp.tile_families(self.tiles(("amp1", "amp2")), "auto"), ())
+        # Different windows of one LocusGroup (normalize-reads tiling) are not one tag window.
+        window_a, window_b = self.tiles(("amp1", "amp1"))
+        shifted = mp.Locus(1, "tileB", self.AMPLICON[5:13], "", "G", "A", 15, self.AMPLICON[5:] + "AAAAA",
+                           self.AMPLICON[5:20] + "A" + self.AMPLICON[21:] + "AAAAA", locus_group="amp1")
+        self.assertEqual(mp.tile_families([window_a, shifted]), ())
+
+    def test_tie_across_families_stays_ambiguous(self):
+        tile_a, tile_b = self.tiles(("amp1", "amp1"))
+        elsewhere = dataclasses.replace(tile_a, index=2, marker="elsewhere", locus_group="amp2")
+        loci = [tile_a, tile_b, elsewhere]
+        families = mp.tile_families(loci)
+        self.assertEqual(families, ((0, 1),))
+        family_of = {member: family for family in families for member in family}
+        self.assertEqual(mp.select_markers(self.AMPLICON, [0, 1, 2], loci, 3, family_of=family_of), ((), "ambiguous"))
+
+    def test_generate_counts_tiles_in_one_panel(self):
+        amplicon = self.AMPLICON
+        haplotypes = [amplicon] * 12 + [amplicon[:10] + "T" + amplicon[11:]] * 6 + [amplicon[:20] + "A" + amplicon[21:]] * 4
+        partials = [amplicon[:26]] * 2
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fastq_dir = root / "fastq"
+            fastq_dir.mkdir()
+            with (fastq_dir / "s1.fastq").open("w") as handle:
+                for number, sequence in enumerate(haplotypes + partials):
+                    handle.write(f"@r{number}\n{sequence}\n+\n{'I' * len(sequence)}\n")
+            tags = root / "tags.csv"
+            mp.write_reference_tags(tags, self.tiles())  # no LocusGroup: the tiles are detected
+            outcomes = {}
+            for mode in ("auto", "off"):
+                output = root / f"{mode}.csv"
+                self.assertEqual(mp.main(["generate", "--fastq-dir", str(fastq_dir), "--reference-tags", str(tags),
+                                          "--tag-length", "30", "--jobs", "1", "--reproducible-min-samples", "0",
+                                          "--depth-min-reads", "1", "--tile-groups", mode,
+                                          "--cache-dir", str(root / "cache"), "--output", str(output)]), 0)
+                totals = mp.Counter()
+                for record in mp.read_madc(output)["records"]:
+                    totals[record["clone_id"]] += record["counts"][0]
+                with Path(str(output) + ".qc.json").open() as handle:
+                    outcomes[mode] = (totals, json.load(handle))
+            totals, qc = outcomes["auto"]
+            self.assertEqual(totals, {"tileA": 24, "tileB": 24})
+            self.assertEqual(qc["tile_families"], [["tileA", "tileB"]])
+            accounting = qc["read_accounting"]
+            self.assertEqual(accounting["reads_assigned_full_length"], 22)   # each read once
+            self.assertEqual(accounting["tile_extra_credits_full_length"], 22)
+            self.assertEqual(accounting["tile_extra_credits_partial"], 2)
+            self.assertEqual(
+                accounting["reads_in_final_count_table"],
+                accounting["reads_assigned_full_length"] + accounting["tile_extra_credits_full_length"]
+                - accounting["reads_n_dropped"] + accounting["partial_reads_added_to_counts"],
+            )
+            totals, qc = outcomes["off"]
+            self.assertEqual(totals, {"tileA": 0, "tileB": 0})
+            self.assertEqual(qc["tile_families"], [])
+            self.assertEqual(qc["sample_qc"][0]["reads_ambiguous"], 22)
+            # The families are part of the cache key: two runs, two cache entries.
+            self.assertEqual(len(list((root / "cache").glob("s1.*.json.gz"))), 2)
