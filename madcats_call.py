@@ -118,6 +118,7 @@ from madcats import (
     nonnegative_int,
     open_text,
     positive_int,
+    proper_fraction,
     variant_events,
 )
 
@@ -197,6 +198,8 @@ class ModelSettings:
             raise ValueError(f"prior must be one of {', '.join(PRIOR_CHOICES)}")
         if not 0 <= self.selfing_rate <= 1:
             raise ValueError("selfing_rate must be between 0 and 1")
+        if self.selfing_rate > 0 and self.prior != PRIOR_HWE:
+            raise ValueError("selfing_rate applies to the hwe prior only")
         if self.tolerance <= 0:
             raise ValueError("tolerance must be positive")
         if self.max_iterations < 1:
@@ -684,8 +687,13 @@ def fit_normal_prior(
     return best_mean, best_sd
 
 
+def log_probability(probability: float) -> float:
+    """Natural log of a probability, with minus infinity for a probability of zero."""
+    return math.log(probability) if probability > 0.0 else NEGATIVE_INFINITY
+
+
 def log_probabilities(probabilities: Sequence[float]) -> List[float]:
-    """Natural logs of probabilities, with minus infinity for a probability of zero."""
+    """``log_probability`` of each of several probabilities."""
     return [math.log(probability) if probability > 0.0 else NEGATIVE_INFINITY for probability in probabilities]
 
 
@@ -728,6 +736,14 @@ def posterior_mean_dosage(posterior: Sequence[float]) -> float:
 # ---------------------------------------------------------------------------
 # One marker
 # ---------------------------------------------------------------------------
+
+
+def expected_allele_share(posterior: Sequence[float], ploidy: int) -> float:
+    """The share of a sample's chromosome copies expected to carry the allele.
+
+    Shares can be compared and averaged between samples of different ploidy.
+    """
+    return posterior_mean_dosage(posterior) / ploidy
 
 
 def depth_ratio_frequencies(depths: Sequence[Sequence[int]]) -> Optional[List[float]]:
@@ -843,7 +859,7 @@ def _neighbourhood_frequencies(
     frequencies = []
     for allele, record_frequency in enumerate(record_frequencies):
         shares = [
-            posterior_mean_dosage(sample_posteriors[allele]) / ploidy
+            expected_allele_share(sample_posteriors[allele], ploidy)
             for sample_posteriors, ploidy in zip(posteriors, ploidies)
         ]
         frequencies.append(
@@ -942,7 +958,7 @@ def frequencies_from_posteriors(
     totals = [0.0] * allele_count
     for sample_posteriors, ploidy in zip(posteriors, ploidies):
         for allele, posterior in enumerate(sample_posteriors):
-            totals[allele] += posterior_mean_dosage(posterior) / ploidy
+            totals[allele] += expected_allele_share(posterior, ploidy)
     return [total / len(posteriors) for total in totals]
 
 
@@ -1087,6 +1103,18 @@ class BiasFit(NamedTuple):
     at_limit: bool
 
 
+def log_probability_of_counts(log_likelihoods: Sequence[float], log_prior: Sequence[float]) -> float:
+    """Log-probability of one sample's read count of an allele, with the sample's genotype summed out.
+
+    The genotype is unknown, so the probability of the count is the average
+    over the dosages, weighted by their prior probabilities.  Minus infinity
+    when the prior rules out every dosage the count allows.
+    """
+    return log_sum_of_exponentials(
+        [log_likelihood + log_dosage_prior for log_likelihood, log_dosage_prior in zip(log_likelihoods, log_prior)]
+    )
+
+
 def marginal_log_likelihood(
     log_likelihoods: Sequence[Sequence[Sequence[float]]],
     priors: Dict[int, List[List[float]]],
@@ -1095,21 +1123,15 @@ def marginal_log_likelihood(
 ) -> float:
     """Log-likelihood of the read counts of one allele, with the genotypes summed out.
 
-    A sample's genotype is unknown, so the probability of its counts is the
-    average over the dosages, weighted by their prior probabilities.  The
-    samples' logs are added.  ``log_likelihoods`` is ``[sample][allele][dosage]``,
+    The sum over samples of ``log_probability_of_counts``.
+    ``log_likelihoods`` is ``[sample][allele][dosage]``,
     ``priors`` is ``[group][allele][dosage]`` and ``prior_groups`` gives each
     sample's group, as in ``MarkerCall``.
     """
     log_priors = {group: log_probabilities(prior[allele]) for group, prior in priors.items()}
     total = 0.0
     for sample_log_likelihoods, group in zip(log_likelihoods, prior_groups):
-        sample_total = log_sum_of_exponentials(
-            [
-                log_likelihood + log_prior
-                for log_likelihood, log_prior in zip(sample_log_likelihoods[allele], log_priors[group])
-            ]
-        )
+        sample_total = log_probability_of_counts(sample_log_likelihoods[allele], log_priors[group])
         # A sample whose counts the prior rules out entirely is left out, as its posterior
         # falls back to the prior (see dosage_posterior).
         if sample_total > NEGATIVE_INFINITY:
@@ -1189,7 +1211,7 @@ def fit_allele_bias(
     return result
 
 
-def _with_mirrored_reference_allele(alternate: MarkerCall, ploidies: Sequence[int]) -> MarkerCall:
+def _with_mirrored_reference_allele(alternate: MarkerCall) -> MarkerCall:
     """Complete a two-allele record from the result for its alternate allele.
 
     With two alleles the reference allele's dosage is the ploidy minus the
@@ -1220,14 +1242,11 @@ def call_marker(
     depths: Sequence[Sequence[int]],
     ploidies: Sequence[int],
     settings: ModelSettings = ModelSettings(),
-    start_frequencies: Optional[Sequence[float]] = None,
 ) -> MarkerCall:
     """Estimate dosage posteriors for every sample and allele of one marker.
 
     depths: read counts, ``[sample][allele]``.
     ploidies: one ploidy per sample.
-    start_frequencies: allele frequencies to start from, in place of the
-        depth-ratio estimates.
 
     With the ``uniform`` prior there is one pass, and the allele frequencies
     are used only by the contamination term.  With the ``hwe`` prior the
@@ -1250,7 +1269,7 @@ def call_marker(
     use_neighbours = settings.prior == PRIOR_STRUCTURE and settings.neighbours is not None and any(settings.neighbours)
     if use_neighbours and len(settings.neighbours) != len(ploidies):
         raise ValueError("settings.neighbours must have one entry per sample")
-    frequencies = list(start_frequencies) if start_frequencies is not None else depth_ratio_frequencies(depths)
+    frequencies = depth_ratio_frequencies(depths)
     if frequencies is None:
         return MarkerCall(callable=False, allele_frequencies=[], log_likelihoods=[], posteriors=[])
 
@@ -1280,7 +1299,7 @@ def call_marker(
         )
         result.iterations += shared.iterations
         result.converged = result.converged and shared.converged
-    return _with_mirrored_reference_allele(result, ploidies) if two_alleles else result
+    return _with_mirrored_reference_allele(result) if two_alleles else result
 
 
 # ---------------------------------------------------------------------------
@@ -1294,10 +1313,6 @@ def most_probable_dosage(posterior: Sequence[float]) -> Optional[int]:
     if sum(1 for probability in posterior if probability == highest) > 1:
         return None
     return list(posterior).index(highest)
-
-
-def _log_probability(probability: float) -> float:
-    return math.log(probability) if probability > 0.0 else NEGATIVE_INFINITY
 
 
 def correct_dosages_to_ploidy(
@@ -1328,12 +1343,13 @@ def correct_dosages_to_ploidy(
         for allele, dosage in enumerate(corrected):
             if not 0 <= dosage + step <= ploidy:
                 continue
-            log_probability = sum(
-                _log_probability(posteriors[other][corrected[other] + (step if other == allele else 0)])
+            # The log-probability of the whole genotype if this allele takes the step.
+            genotype_log_probability = sum(
+                log_probability(posteriors[other][corrected[other] + (step if other == allele else 0)])
                 for other in range(len(corrected))
             )
-            if log_probability > best_log_probability:
-                best_allele, best_log_probability = allele, log_probability
+            if genotype_log_probability > best_log_probability:
+                best_allele, best_log_probability = allele, genotype_log_probability
         if best_allele is None:
             return None
         corrected[best_allele] += step
@@ -1447,9 +1463,7 @@ def marker_overdispersion_log_likelihoods(
             # count_constant, with its terms in the same order.
             constant = log_coefficient + log_gamma_of_value - math.lgamma(marker_depth + value)
             log_likelihoods = log_likelihoods_for_counts(alternate_depth, marker_depth, constant, shapes[ploidy])
-            sample_total = log_sum_of_exponentials(
-                [log_likelihood + log_prior for log_likelihood, log_prior in zip(log_likelihoods, log_priors[group])]
-            )
+            sample_total = log_probability_of_counts(log_likelihoods, log_priors[group])
             if sample_total > NEGATIVE_INFINITY:
                 total += sample_total
         totals.append(total)
@@ -1674,7 +1688,7 @@ def expected_alternate_shares(
     if not result.callable:
         return None
     return [
-        posterior_mean_dosage(sample_posteriors[1]) / ploidy
+        expected_allele_share(sample_posteriors[1], ploidy)
         for sample_posteriors, ploidy in zip(result.posteriors, ploidies)
     ]
 
@@ -1750,7 +1764,7 @@ def _neighbour_candidates(
 def find_neighbours(
     depths_by_marker: Sequence[Sequence[Sequence[int]]],
     ploidies: Sequence[int],
-    settings: ModelSettings = ModelSettings(),
+    settings: ModelSettings,
     map_markers=map,
 ) -> NeighbourChoice:
     """Find the samples most like each sample across markers, and how many of them to use.
@@ -2083,7 +2097,7 @@ def target_allele_depths(
     return depths, _summed_counts(counts_by_row, other_rows, sample_count)
 
 
-def _without_negative_cells(rows: Sequence[MadcRow], sample_count: int) -> Tuple[List[List[int]], int]:
+def _without_negative_cells(rows: Sequence[MadcRow]) -> Tuple[List[List[int]], int]:
     """The rows' counts with every sample that has a negative count at the marker set to zero.
 
     A negative read count (signed 8-bit overflow in some vendor MADCs) makes
@@ -2242,7 +2256,13 @@ def format_record(
     if excluded_reads and excluded_reads >= NOTABLE_EXCLUDED_READ_SHARE * (used_reads + excluded_reads):
         tallies["records_with_many_excluded_reads"] += 1
 
-    value_count = 4 if two_allele_model else 2
+    # What follows GT, AD, DP and XD in a sample's column, and the confidence a genotype needs.
+    if two_allele_model:
+        value_keys = ["GQ", "DS", "GP", "PL"]
+        confidence_threshold = options.min_genotype_quality
+    else:
+        value_keys = ["DS", "MPC"]
+        confidence_threshold = options.min_marginal_posterior
     sample_columns = []
     samples_called = 0
     for sample, (sample_depths, ploidy) in enumerate(zip(depths, ploidies)):
@@ -2251,16 +2271,14 @@ def format_record(
         dosages = None
         if not result.callable or depth == 0:
             missing_reason = "no_reads"
-            values = ["."] * value_count
+            values = ["."] * len(value_keys)
         else:
             if two_allele_model:
                 dosages, confidence, values = _two_allele_genotype(
                     result.posteriors[sample], result.log_likelihoods[sample], ploidy
                 )
-                confidence_threshold = options.min_genotype_quality
             else:
                 dosages, confidence, values = _multiallelic_genotype(result.posteriors[sample], ploidy, tallies)
-                confidence_threshold = options.min_marginal_posterior
             if depth < options.min_depth:
                 missing_reason = "low_depth"
             elif dosages is None:
@@ -2298,8 +2316,7 @@ def format_record(
             position, record_id, reference_bias, fit.objective, math.exp(-fit.best_start), fit.fits,
             result.converged, fit.at_limit,
         )
-    format_keys = ["GT", "AD", "DP"] + (["XD"] if excluded_depths is not None else [])
-    format_keys += ["GQ", "DS", "GP", "PL"] if two_allele_model else ["DS", "MPC"]
+    format_keys = ["GT", "AD", "DP"] + (["XD"] if excluded_depths is not None else []) + value_keys
     line = "\t".join(
         [marker, str(position), record_id, alleles[0], ",".join(alleles[1:]) or ".", ".", ".", ";".join(info),
          ":".join(format_keys)]
@@ -2361,7 +2378,7 @@ def process_marker(task: MarkerTask, ploidies: Sequence[int], options: CallOptio
         output.tallies[("markers", "skipped_no_ref_row")] += 1
         return output
     output.tag_length = len(ref_tag)
-    counts_by_row, samples_cleared = _without_negative_cells(rows, sample_count)
+    counts_by_row, samples_cleared = _without_negative_cells(rows)
     output.tallies[("markers", "sample_cells_cleared_for_negative_counts")] += samples_cleared
 
     def add(vcf_type: str, line: str, tallies: Counter) -> None:
@@ -2519,7 +2536,7 @@ def _haplotype_record(
 
 
 def model_description(
-    settings: ModelSettings, overdispersion_estimated: bool = False, background_rate_estimated: bool = False
+    settings: ModelSettings, overdispersion_estimated: bool, background_rate_estimated: bool
 ) -> str:
     """One sentence stating the genotype model and its inheritance assumption, for the VCF header."""
     source = ", estimated from the read counts" if overdispersion_estimated else ""
@@ -2674,25 +2691,43 @@ def target_depths_by_marker(tasks: Sequence[MarkerTask], sample_count: int) -> L
         rows = [row for row in task.rows if row.sequence]
         if not any(row.category in ALTERNATE_CATEGORIES for row in rows):
             continue
-        counts_by_row, _ = _without_negative_cells(rows, sample_count)
+        counts_by_row, _ = _without_negative_cells(rows)
         depths_by_marker.append(target_allele_depths(rows, counts_by_row, sample_count)[0])
     return depths_by_marker
+
+
+@dataclasses.dataclass
+class ReadModelChoice:
+    """The overdispersion and background-read rate a run uses, and where each came from.
+
+    ``overdispersion_estimated`` and ``background_rate_estimated`` are False
+    when the value was given on the command line, and also when the estimate
+    could not be used and the fallback value took its place.  The two reports
+    go into the QC JSON.
+    """
+
+    overdispersion: float
+    background_rate: float
+    overdispersion_estimated: bool
+    background_rate_estimated: bool
+    overdispersion_report: Dict[str, object]
+    background_report: Dict[str, object]
 
 
 def choose_read_model(
     depths_by_marker: Sequence[Sequence[Sequence[int]]],
     ploidies: Sequence[int],
     settings: ModelSettings,
-    overdispersion,
-    background_rate,
+    requested_overdispersion,
+    requested_background_rate,
     map_markers=map,
-) -> Tuple[float, float, Dict[str, object], Dict[str, object]]:
+) -> ReadModelChoice:
     """Settle the overdispersion and the background-read rate of a run.
 
-    ``overdispersion`` and ``background_rate`` are numbers or ``auto``.
-    Returns the two values to use and a report on each for the QC JSON.
-    Whatever is ``auto`` is estimated from each marker's reference-type and
-    alternate-type read counts, ``depths_by_marker`` (``estimate_read_model``).
+    ``requested_overdispersion`` and ``requested_background_rate`` are
+    numbers or ``auto``.  Whatever is ``auto`` is estimated from each
+    marker's reference-type and alternate-type read counts,
+    ``depths_by_marker`` (``estimate_read_model``).
 
     The estimate is made with the free-weights prior whatever prior the run
     uses, because the estimate is only as good as the genotype proportions
@@ -2700,87 +2735,104 @@ def choose_read_model(
     samples from two subpopulations, and with those or the ``norm`` prior,
     neither of which can describe an excess of homozygotes, it failed for
     inbred samples.  An overdispersion that cannot be estimated falls back
-    to the default: when the table is too small, and when the best value is
-    the lowest one tried, which is what a table without heterozygous
-    samples and without stray reads gives, since it has no scatter to
-    measure.
+    to ``DEFAULT_OVERDISPERSION``: when the table is too small, and when the
+    best value is the lowest one tried, which is what a table without
+    heterozygous samples and without stray reads gives, since it has no
+    scatter to measure.
     """
-    overdispersion_report: Dict[str, object] = {"requested": overdispersion}
-    background_report: Dict[str, object] = {"requested": background_rate}
-    if AUTO not in (overdispersion, background_rate):
-        overdispersion_report["used"], background_report["used"] = overdispersion, background_rate
-        return overdispersion, background_rate, overdispersion_report, background_report
+    overdispersion_report: Dict[str, object] = {"requested": requested_overdispersion}
+    background_report: Dict[str, object] = {"requested": requested_background_rate}
+    if AUTO not in (requested_overdispersion, requested_background_rate):
+        overdispersion_report["used"] = requested_overdispersion
+        background_report["used"] = requested_background_rate
+        return ReadModelChoice(
+            requested_overdispersion, requested_background_rate, False, False, overdispersion_report,
+            background_report,
+        )
 
     estimate = estimate_read_model(
         depths_by_marker,
         ploidies,
         dataclasses.replace(settings, prior=PRIOR_FREE, selfing_rate=0.0),
-        BACKGROUND_RATE_GRID if background_rate == AUTO else (background_rate,),
-        OVERDISPERSION_GRID if overdispersion == AUTO else (overdispersion,),
+        BACKGROUND_RATE_GRID if requested_background_rate == AUTO else (requested_background_rate,),
+        OVERDISPERSION_GRID if requested_overdispersion == AUTO else (requested_overdispersion,),
         map_markers,
     )
-    scatter = estimate.overdispersion
-    too_small = scatter.value is None
+    overdispersion_estimate = estimate.overdispersion
+    too_small = overdispersion_estimate.value is None
     if too_small:
         print(
-            f"note: too few read counts to estimate the read model ({scatter.cells_with_reads:,} sample-by-marker "
-            f"cells with reads; {OVERDISPERSION_MIN_CELLS} needed).",
+            f"note: too few read counts to estimate the read model ({overdispersion_estimate.cells_with_reads:,} "
+            f"sample-by-marker cells with reads; {OVERDISPERSION_MIN_CELLS} needed).",
             file=sys.stderr,
         )
 
-    if background_rate == AUTO:
-        background_report.update(
-            estimate=None if too_small else estimate.background_rate,
-            by_rate={
+    background_rate = requested_background_rate
+    background_rate_estimated = requested_background_rate == AUTO and not too_small
+    if requested_background_rate == AUTO:
+        background_report["estimate"] = estimate.background_rate if background_rate_estimated else None
+        background_report["by_rate"] = (
+            {
                 format(rate, "g"): {"overdispersion": value, "log_likelihood": round(total, 3)}
                 for rate, (value, total) in estimate.by_background_rate.items()
-                if not too_small
-            },
+            }
+            if background_rate_estimated
+            else {}
         )
-        background_rate = DEFAULT_BACKGROUND_RATE if too_small else estimate.background_rate
-        at_end = not too_small and background_rate in (min(BACKGROUND_RATE_GRID), max(BACKGROUND_RATE_GRID))
+        background_rate = estimate.background_rate if background_rate_estimated else DEFAULT_BACKGROUND_RATE
+        at_end = background_rate_estimated and background_rate in (
+            min(BACKGROUND_RATE_GRID), max(BACKGROUND_RATE_GRID)
+        )
         print(
-            f"{'Using' if too_small else 'Estimated'} background-read rate: {background_rate:g}"
+            f"{'Estimated' if background_rate_estimated else 'Using'} background-read rate: {background_rate:g}"
             + (" (the end of the range tried)" if at_end else ""),
             file=sys.stderr,
         )
     background_report["used"] = background_rate
 
-    if overdispersion == AUTO:
+    overdispersion = requested_overdispersion
+    overdispersion_estimated = False
+    if requested_overdispersion == AUTO:
         overdispersion_report.update(
-            estimate=scatter.value,
-            markers_used=scatter.markers_used,
-            cells_with_reads=scatter.cells_with_reads,
-            values_by_round=scatter.values_by_round,
-            at_limit=scatter.at_limit,
+            estimate=overdispersion_estimate.value,
+            markers_used=overdispersion_estimate.markers_used,
+            cells_with_reads=overdispersion_estimate.cells_with_reads,
+            values_by_round=overdispersion_estimate.values_by_round,
+            at_limit=overdispersion_estimate.at_limit,
             log_likelihood_by_value={
-                format(value, "g"): round(total, 3) for value, total in scatter.log_likelihood.items()
+                format(value, "g"): round(total, 3)
+                for value, total in overdispersion_estimate.log_likelihood.items()
             },
         )
         if too_small:
             overdispersion = DEFAULT_OVERDISPERSION
             print(f"Using overdispersion: {overdispersion:g}", file=sys.stderr)
-        elif scatter.at_limit == "lowest":
+        elif overdispersion_estimate.at_limit == "lowest":
             overdispersion = DEFAULT_OVERDISPERSION
             print(
-                f"warning: the overdispersion estimate is the lowest value tried ({scatter.value:g}), as it is "
-                "when no sample is heterozygous (inbred lines) and the reads show no scatter to measure. "
+                f"warning: the overdispersion estimate is the lowest value tried ({overdispersion_estimate.value:g}), "
+                "as it is when no sample is heterozygous (inbred lines) and the reads show no scatter to measure. "
                 f"Using {overdispersion:g}; set --overdispersion to a number to choose it yourself.",
                 file=sys.stderr,
             )
         else:
-            overdispersion = float(scatter.value)
+            overdispersion = float(overdispersion_estimate.value)
+            overdispersion_estimated = True
             limit_note = ""
-            if scatter.at_limit == "highest":
+            if overdispersion_estimate.at_limit == "highest":
                 limit_note = (
                     "; this is the highest value tried, so the counts scatter no more than random sampling of reads"
                 )
             print(
-                f"Estimated overdispersion: {overdispersion:g} (from {scatter.markers_used:,} markers{limit_note})",
+                f"Estimated overdispersion: {overdispersion:g} "
+                f"(from {overdispersion_estimate.markers_used:,} markers{limit_note})",
                 file=sys.stderr,
             )
     overdispersion_report["used"] = overdispersion
-    return overdispersion, background_rate, overdispersion_report, background_report
+    return ReadModelChoice(
+        overdispersion, background_rate, overdispersion_estimated, background_rate_estimated, overdispersion_report,
+        background_report,
+    )
 
 
 def _background_rate(value: str) -> float:
@@ -2790,11 +2842,69 @@ def _background_rate(value: str) -> float:
     return parsed
 
 
-def _contamination_rate(value: str) -> float:
-    parsed = float(value)
-    if not 0 <= parsed < 1:
-        raise argparse.ArgumentTypeError("must be at least 0 and below 1")
-    return parsed
+def write_vcfs(
+    prefix: str,
+    vcf_types: Sequence[str],
+    sample_names: Sequence[str],
+    contigs: Sequence[Tuple[str, int]],
+    options: CallOptions,
+    outputs: Sequence[MarkerOutput],
+) -> Dict[str, Path]:
+    """Write one VCF per requested type; return each type's path."""
+    written = {}
+    for vcf_type in vcf_types:
+        vcf_path = Path(prefix + VCF_FILE_SUFFIX[vcf_type])
+        with vcf_path.open("w") as handle:
+            for line in vcf_header(vcf_type, sample_names, contigs, options):
+                handle.write(line + "\n")
+            for output in outputs:
+                for line in output.lines[vcf_type]:
+                    handle.write(line + "\n")
+        written[vcf_type] = vcf_path
+    return written
+
+
+def write_haplotype_allele_table(prefix: str, outputs: Sequence[MarkerOutput]) -> Path:
+    """Write the table that ties each allele number of the haplotype VCF to the MADC rows it was counted from."""
+    alleles_path = Path(prefix + ".haplotypes.alleles.csv")
+    with alleles_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["CloneID", "AlleleIndex", "AlleleIDs", "AlleleSequence", "TotalReads"])
+        for output in outputs:
+            for allele_index, allele_ids, sequence, total_reads in output.haplotype_alleles:
+                writer.writerow([output.clone_id, allele_index, allele_ids, sequence, total_reads])
+    return alleles_path
+
+
+def write_bias_table(prefix: str, outputs: Sequence[MarkerOutput]) -> Tuple[Optional[Path], Dict[str, object]]:
+    """Write the fitted allelic biases, one row per record; return the path and a summary for the QC JSON.
+
+    Nothing is written, and the summary is empty, when no bias was fitted.
+    """
+    bias_rows = [(output.clone_id, row) for output in outputs for row in output.bias_rows]
+    if not bias_rows:
+        return None, {}
+    bias_path = Path(prefix + ".bias.csv")
+    with bias_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            ["CloneID", "Position", "RecordID", "Bias", "LogLikelihood", "BestStart", "Fits", "Converged", "AtLimit"]
+        )
+        for clone_id, row in bias_rows:
+            writer.writerow(
+                [clone_id, row.position, row.record_id, _decimal(row.bias), _decimal(row.objective, 3),
+                 _decimal(row.best_start), row.fits, int(row.converged), int(row.at_limit)]
+            )
+    biases = sorted(row.bias for _, row in bias_rows)
+    summary = {
+        "records_fitted": len(biases),
+        "median": round(biases[len(biases) // 2], 4),
+        "outside_0.8_to_1.25": sum(1 for bias in biases if not 0.8 <= bias <= 1.25),
+        "outside_0.67_to_1.5": sum(1 for bias in biases if not 2 / 3 <= bias <= 1.5),
+        "at_search_limit": sum(1 for _, row in bias_rows if row.at_limit),
+        "not_converged": sum(1 for _, row in bias_rows if not row.converged),
+    }
+    return bias_path, summary
 
 
 def run_call(args: argparse.Namespace) -> int:
@@ -2868,10 +2978,12 @@ def run_call(args: argparse.Namespace) -> int:
         # The read-model estimate and the search for like samples both work on these counts.
         needs_target_depths = AUTO in (args.overdispersion, args.background_rate) or args.prior == PRIOR_STRUCTURE
         target_depths = target_depths_by_marker(tasks, len(ploidies)) if needs_target_depths else []
-        overdispersion, background_rate, overdispersion_report, background_report = choose_read_model(
+        read_model = choose_read_model(
             target_depths, ploidies, model, args.overdispersion, args.background_rate, map_over_markers
         )
-        settings = dataclasses.replace(model, overdispersion=overdispersion, background_rate=background_rate)
+        settings = dataclasses.replace(
+            model, overdispersion=read_model.overdispersion, background_rate=read_model.background_rate
+        )
         structure_report: Dict[str, object] = {}
         if args.prior == PRIOR_STRUCTURE:
             choice = find_neighbours(target_depths, ploidies, settings, map_over_markers)
@@ -2904,9 +3016,8 @@ def run_call(args: argparse.Namespace) -> int:
             min_marginal_posterior=args.min_marginal_posterior,
             max_other_fraction=args.max_other_fraction,
             gap_band=args.max_indel_length,
-            # False when a value was given, or when the estimate fell back to the default.
-            overdispersion_estimated=overdispersion_report.get("estimate") == overdispersion,
-            background_rate_estimated=background_report.get("estimate") == background_rate,
+            overdispersion_estimated=read_model.overdispersion_estimated,
+            background_rate_estimated=read_model.background_rate_estimated,
         )
         outputs = map_over_markers(functools.partial(process_marker, ploidies=ploidies, options=options), tasks)
     finally:
@@ -2920,52 +3031,9 @@ def run_call(args: argparse.Namespace) -> int:
 
     prefix = str(args.output_prefix)
     Path(prefix).parent.mkdir(parents=True, exist_ok=True)
-    written = {}
-    for vcf_type in vcf_types:
-        vcf_path = Path(prefix + VCF_FILE_SUFFIX[vcf_type])
-        with vcf_path.open("w") as handle:
-            for line in vcf_header(vcf_type, sample_names, contigs, options):
-                handle.write(line + "\n")
-            for output in outputs:
-                for line in output.lines[vcf_type]:
-                    handle.write(line + "\n")
-        written[vcf_type] = vcf_path
-    alleles_path = None
-    if VCF_HAPLOTYPE in vcf_types:
-        # Ties each allele number of the haplotype VCF to the MADC rows it was counted from.
-        alleles_path = Path(prefix + ".haplotypes.alleles.csv")
-        with alleles_path.open("w", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["CloneID", "AlleleIndex", "AlleleIDs", "AlleleSequence", "TotalReads"])
-            for output in outputs:
-                for allele_index, allele_ids, sequence, total_reads in output.haplotype_alleles:
-                    writer.writerow([output.clone_id, allele_index, allele_ids, sequence, total_reads])
-
-    bias_path = None
-    bias_summary: Dict[str, object] = {}
-    bias_rows = [(output.clone_id, row) for output in outputs for row in output.bias_rows]
-    if bias_rows:
-        bias_path = Path(prefix + ".bias.csv")
-        with bias_path.open("w", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                ["CloneID", "Position", "RecordID", "Bias", "LogLikelihood", "BestStart", "Fits", "Converged",
-                 "AtLimit"]
-            )
-            for clone_id, row in bias_rows:
-                writer.writerow(
-                    [clone_id, row.position, row.record_id, _decimal(row.bias), _decimal(row.objective, 3),
-                     _decimal(row.best_start), row.fits, int(row.converged), int(row.at_limit)]
-                )
-        biases = sorted(row.bias for _, row in bias_rows)
-        bias_summary = {
-            "records_fitted": len(biases),
-            "median": round(biases[len(biases) // 2], 4),
-            "outside_0.8_to_1.25": sum(1 for bias in biases if not 0.8 <= bias <= 1.25),
-            "outside_0.67_to_1.5": sum(1 for bias in biases if not 2 / 3 <= bias <= 1.5),
-            "at_search_limit": sum(1 for _, row in bias_rows if row.at_limit),
-            "not_converged": sum(1 for _, row in bias_rows if not row.converged),
-        }
+    written = write_vcfs(prefix, vcf_types, sample_names, contigs, options, outputs)
+    alleles_path = write_haplotype_allele_table(prefix, outputs) if VCF_HAPLOTYPE in vcf_types else None
+    bias_path, bias_summary = write_bias_table(prefix, outputs)
 
     per_type = {
         vcf_type: {name: count for (group, name), count in sorted(tallies.items()) if group == vcf_type}
@@ -3003,8 +3071,8 @@ def run_call(args: argparse.Namespace) -> int:
         "model": model_description(
             options.settings, options.overdispersion_estimated, options.background_rate_estimated
         ),
-        "overdispersion": overdispersion_report,
-        "background_rate": background_report,
+        "overdispersion": read_model.overdispersion_report,
+        "background_rate": read_model.background_report,
         "structure_prior": structure_report,
         "coordinates": "marker-local",
         "samples": {
@@ -3149,7 +3217,7 @@ def add_call_command(subparsers) -> None:
         ),
     )
     calling.add_argument(
-        "--contamination-rate", type=_contamination_rate, default=0.0,
+        "--contamination-rate", type=proper_fraction, default=0.0,
         help=(
             "polyRAD's contamination: expected share of a sample's reads that come from other samples and show "
             "an allele at its frequency among them. --background-rate covers the same reads and more, so this "
