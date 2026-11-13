@@ -46,10 +46,11 @@ overdispersion and of one background-read rate for the whole table
 (``estimate_overdispersion``, ``estimate_read_model``) and its use of the
 free-weights prior, the order of bias before background reads, the search for
 the allelic bias (``fit_allele_bias``) and the rule that keeps a fitted bias
-only where it gains a margin (``BIAS_AUTO_MIN_GAIN``), the fit of the ``norm`` prior by
-Newton's method and its fit per ploidy, the neighbour-based ``structure``
-prior (``find_neighbours``), the exact search for dosages that sum to the
-ploidy as a check on polyRAD's rule, and the VCF fields (GQ, GP, PL, MPC).
+only where it gains a margin (``BIAS_AUTO_MIN_GAIN``), the fit of the
+``norm`` prior by Newton's method and its fit per ploidy, the neighbour-based
+``structure`` prior (``find_neighbours``), the exact search for dosages that
+sum to the ploidy as a check on polyRAD's rule, and the VCF fields (GQ, GP,
+PL, MPC).
 The numerical agreement with both packages is checked by tests/test_call.py
 against values stored in tests/fixtures/.
 
