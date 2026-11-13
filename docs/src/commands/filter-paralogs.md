@@ -266,6 +266,23 @@ It kept 113,667 rows, with 35.7% of the reads. See the
   genome, with CloneID positions or without. Markers given a wrong position were left unplaced,
   not placed elsewhere.
 - **Against bwa mem.** The lettuce figures above.
+- **Alfalfa, against bwa mem and blastn.** Two tetraploid F1 families of the alfalfa 3K panel
+  (7,517 rows of 54-base tags and 8,731 rows of 81-base tags) and the panel's haplotype database
+  (23,469 haplotypes) were run on a monoploid genome of another cultivar than the one the panel
+  was designed on. Every row was also aligned with bwa mem and with blastn and labelled from
+  each aligner's own score. The filter kept or dropped the same rows as bwa mem for 99.4 to
+  99.9% of rows and as blastn for 99.3 to 99.7%; the two aligners agree with each other on 99.4
+  to 99.8%.
+- **Alfalfa, by inheritance.** In those families a row can be mapped without aligning it, by the
+  rows of other markers it is inherited with. Of the rows the filter kept, 97.6% map to their own
+  marker in both families. Of the rows labelled `paralog` whose better site is far from the
+  marker, 84 to 95% map away from it, most of them to the region the filter named. A row
+  whose better site is a nearby copy on the same chromosome is inherited with the marker, and
+  this test cannot judge it.
+- **Alfalfa, placement.** With `--clone-positions ignore` on that genome, 97.8% of the markers
+  with 81-base tags and 91.0% of those with 54-base tags were placed where their 361-base design
+  sequence lies, 0.5 to 0.9% in another copy, and the rest left unplaced. With CloneIDs that are
+  positions on the genome given, all but 7 of 2,734 were placed there.
 - Output does not depend on `--jobs`.
 
 ## See Also

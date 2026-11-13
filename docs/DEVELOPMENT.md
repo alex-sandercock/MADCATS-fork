@@ -1642,9 +1642,147 @@ options:
   alleles of the marker.
 
 The same design, twenty markers on a random genome, is in the test suite
-(`PlantedCopyTests`). Not covered: a polyploid panel, where a
-subgenome-resolved reference has a copy of every tag on each subgenome; a
-fragmented or diverged reference; and a second real panel with paralogs.
+(`PlantedCopyTests`).
+
+Alfalfa: two aligners and two families. The alfalfa 3K panel is a second real
+panel with paralogs, in an autotetraploid, and its public data allow three
+checks that the lettuce record lacks: where each marker lies, from more
+sequence than its tag; each row's label from two other aligners; and where
+each row maps genetically.
+
+- MADCs: the two F1 families of the G3 article jkag131, with fixed allele
+  IDs. I195 x J432 has 186 samples, 2,999 markers and 7,517 rows of 54-base
+  tags; E115 x F628 has 374 samples, 2,989 markers and 8,731 rows of 81-base
+  tags. The panel's haplotype database (23,469 haplotypes, Zenodo
+  doi:10.5281/zenodo.10681524) was run as a third table.
+- Genome: the monoploid assembly of cultivar Bolivia (GCA_051527215.1, eight
+  gapless chromosomes, 776 Mb). The panel was designed on XinJiangDaYe, whose
+  assembly is on figshare and was not reachable, so this is a genome of
+  another cultivar: the panel's 361-base design sequences differ from it at a
+  median of 3 bases, and at 17 or more for a tenth of the markers.
+- A marker's home on this genome is where its design sequence (180 bases
+  either side of the target, from the panel's probe table) aligns. bwa mem
+  placed 2,745 of the 3,000 uniquely and minimap2 2,780; the 2,735 that both
+  place uniquely are at the same base in both, and are the markers judged
+  below. Another 22 have a unique place on a chromosome with another number
+  than the panel names, and the rest have no unique place.
+- Two runs of each table: with `--clone-positions ignore`, as a user must run
+  it on a genome the CloneIDs do not refer to, and with the default after the
+  CloneIDs were renamed to the chromosome and target position on this genome,
+  as it runs on a design genome. The first run took 47 s and 5.2 GB with the
+  index built, the others 7 to 8 s.
+
+Placement, for the markers with a home:
+
+| | E115 x F628, 81-base tags (2,730 markers) | I195 x J432, 54-base tags (2,734) |
+|---|---|---|
+| `ignore`: at home | 2,669 | 2,487 |
+| `ignore`: several equal-best sites, one at home | 17 | 28 |
+| `ignore`: somewhere else | 15 | 25 |
+| `ignore`: not placed | 29 | 194 |
+| Positions on this genome: at home | 2,730 | 2,727 (7 not placed) |
+
+Without positions, a Ref tag that differs from this genome is placed where it
+matches best, or nowhere: 0.5 to 0.9% of the markers are put in another copy,
+and 1% (81 bases) to 7% (54 bases) are left unplaced with all their rows
+kept. With positions, the tag is aligned again at its own site and every
+marker but seven is placed.
+
+Rows and reads by label, with positions: in E115 x F628 7,928 rows are
+`on_target` (90.9% of reads), 357 `paralog` (4.3%), 297 `ambiguous` (3.8%),
+9 `unmapped` and 140 `unplaced` (0.9%); 437 rows with 4.1% of the reads are
+dropped, and 217 canonical rows with 4.0% are kept despite their label. In
+I195 x J432 the shares are 88.7%, 4.7%, 4.5%, 0.3% and 1.8%, and 4.2% of the
+reads are dropped. Of the database's 23,469 haplotypes 1,145 are `paralog`
+and 930 `ambiguous`. Lettuce lost 63% of its reads; alfalfa has little to
+remove.
+
+Labels against bwa mem and blastn. Every row was aligned to the same genome
+with bwa mem (`-a -k 12 -T 20`) and with blastn (word size 11, no masking),
+and labelled from the aligner's own score by the rule the filter uses: the
+best score is at home, is equalled elsewhere, or is elsewhere. Rows of the
+markers placed at home; "same decision" joins the labels by what the default
+does with the row (kept: `on_target`, `unmapped`; dropped: `paralog`,
+`ambiguous`):
+
+| Table, run | Rows | bwa mem: same label, same decision | blastn: same label, same decision |
+|---|---|---|---|
+| E115 x F628, positions | 7,916 | 99.42%, 99.81% | 99.42%, 99.68% |
+| E115 x F628, `ignore` | 7,716 | 99.49%, 99.86% | 99.49%, 99.74% |
+| I195 x J432, positions | 6,768 | 98.63%, 99.44% | 98.73%, 99.56% |
+| I195 x J432, `ignore` | 6,145 | 99.27%, 99.56% | 99.35%, 99.63% |
+| Haplotype database, positions | 21,155 | 99.14%, 99.53% | 98.90%, 99.28% |
+| Haplotype database, `ignore` | 20,551 | 99.17%, 99.54% | 98.99%, 99.35% |
+
+bwa mem and blastn give each other the same decision for 99.82% and 99.65% of
+the two families' rows and 99.37% of the database's, so the filter is as near
+to each of them as they are to one another. For RefMatch and AltMatch rows alone the filter and bwa mem
+agree on 99.5% (81 bases) and 98.8% (54 bases). All 297 rows the filter calls
+`paralog` in E115 x F628 are `paralog` for bwa mem.
+
+Where the rows map genetically. In a full-sib family a haplotype is inherited
+with the haplotypes near it on the same chromosome copy, so across the
+progeny its share of the marker's reads rises and falls with theirs, and a
+row from a paralogous copy follows the haplotypes around that copy instead.
+For each row whose share varies in the family, the ten rows of other markers
+that correlate with it most strongly (0.4 or more in absolute value, three or
+more needed) were looked up at their markers' homes. The row is linked at
+home when 60% or more of them lie within 15 Mb of its marker, and linked
+elsewhere when 60% or more lie on one chromosome and fewer than 20% near the
+marker. No alignment of the row enters this.
+
+| Family, run | Rows judged | Kept rows linked at home | Rows labelled `paralog`: linked elsewhere, at home with the other site far away, at home with it near |
+|---|---|---|---|
+| E115 x F628, positions | 2,877 | 2,701 of 2,768 (97.6%) | 38, 7, 29 |
+| E115 x F628, `ignore` | 2,816 | 2,671 of 2,736 (97.6%) | 36, 5, 21 |
+| I195 x J432, positions | 2,585 | 2,425 of 2,485 (97.6%) | 22, 4, 31 |
+| I195 x J432, `ignore` | 2,408 | 2,286 of 2,340 (97.7%) | 20, 1, 21 |
+
+- Of the rows the filter keeps, 97.6% map to their marker in both families.
+  More than half of the others are at some 30 markers where every kept row
+  maps elsewhere: there the marker itself is somewhere else in the family
+  than its design sequence is on this genome, which no row label can mend.
+  The rest, 22 to 28 rows or about 1% of the kept rows judged, are rows from
+  another place that the filter did not catch; a copy that this genome lacks
+  or holds in another form is not seen.
+- Of the `paralog` rows that linkage can decide, 84 to 95% map elsewhere, and
+  for 25 of 38 and 18 of 22 the region they map to holds the site the filter
+  named.
+- For 21 to 31 `paralog` rows the better site is on the marker's own
+  chromosome within 15 Mb, for most of them 1 kb to 1 Mb away. Such a copy is
+  inherited with the marker, so linkage says nothing about them.
+- RefMatch and AltMatch rows that map elsewhere are 9.2% of those judged
+  before the filter and 5.5% after in the larger family, and 8.3% and 5.2% in
+  the smaller.
+- A RefMatch or AltMatch row with reads in every sample of the family is two
+  to three times as common among `paralog` rows as among `on_target` rows:
+  23% against 8%, and 43% against 13%.
+
+Genotypes. `call --prior norm` was run on each family before and after the
+filter and compared with the article's published dosages, which come from
+the same reads. Over the 986 and 974 published targets the share of equal
+dosages moved from 89.80% to 89.87% and from 90.11% to 90.33%. Of the 211
+markers that lost a row in the larger family only 29 are among the
+published ones (2.9%, against 7.1% of the panel), and there the share rose
+from 86.3% to 86.9% with 11% of the genotypes changed. The estimated
+overdispersion rose from 40 to 50 and from 30 to 40: with those rows gone the
+counts scatter less.
+
+A count of the progeny genotypes that the two parents' genotypes cannot give
+was tried as a test and is not one. Reads of a paralog make a parent look
+heterozygous, and a heterozygous parent allows every progeny genotype, so the
+count rewards the rows the filter removes: it was 1.86% before and 2.20%
+after at the markers that lost a row. At chr4.1_040870396 it went from 0 to
+189 of 372 when one row was dropped. That row has a quarter to three quarters
+of the marker's reads in every one of the progeny, which no allele of a
+tetraploid cross has (two copies in each parent leave 1 progeny in 36 without
+it); it differs from the Ref tag at five bases and matches a copy 10 kb away
+better.
+
+Not covered: the design genome; FASTQs of this panel, and so a MADC from
+`generate` (no public alfalfa DArTag reads were found); planted copies in
+this genome; and a haplotype-resolved reference, which has a copy of every
+tag on each haplotype.
 
 ## Genotype calling (`call`, unreleased)
 
@@ -2193,6 +2331,70 @@ mean of 5.30% against its 5.28%.
   prior 34 s, the structure prior 63 s, and the runs with the bias 159 to
   169 s; polyRAD's structure model took 113 to 200 s.
 
+**Which rows a target genotype counts.** `call` counts every row of a marker
+by the base it has at the target, so a RefMatch or AltMatch haplotype adds
+its reads to the allele it carries. A workflow that takes the exact Ref and
+Alt rows only, as the sweetpotato study below did, leaves those reads out.
+The potato vendor MADC and the array decide between the two:
+File S4 was cut down to its 7,830 Ref and Alt rows (of 13,187) and called
+again.
+
+| Counts | `--prior hwe`: all, diploids, tetraploids | With the bias fitted |
+|---|---|---|
+| Every row, by its base at the target | 89.14%, 92.02%, 86.41% | 91.91%, 92.61%, 91.25% |
+| Ref and Alt rows only | 82.06%, 85.25%, 79.04% | 84.36%, 85.77%, 83.03% |
+
+With the Ref and Alt rows alone 7 points fewer genotypes have the array's
+dosage, and 2.1% of the genotypes have no reads at all. The reads on the
+other rows are reads of the target's alleles.
+
+**Hexaploid sweetpotato: replicates of eight clones.** The deposit of a study
+of DNA from sweetpotato leaves and roots (Zenodo record 22288064, CC-BY) has
+a vendor MADC of 80 samples, ten of each of eight clones, and the study's
+genotypes from updog's `norm` model (`multidog`, ploidy 6, written by BIGr's
+`updog2vcf`). There is no second assay, so the measure is how often two
+samples of one clone get the same dosage. The MADC as delivered names each
+sample twice, once per extraction method, and `call` refuses repeated sample
+names; the second of each pair was given a suffix.
+
+The study's genotypes use the exact Ref and Alt rows, so `call` was first run
+on those rows alone (6,240 of 19,319), which gives both tools the same
+counts. 2,636 markers are in every output and 622,513 pairs of samples of one
+clone both have reads:
+
+| Caller | Pairs with the same dosage | Different dosages among the eight clones, per marker | Same genotype as the study's |
+|---|---|---|---|
+| updog `norm`, as stored in the deposit | 87.31% | 2.16 | |
+| `call --prior norm --allele-bias fit` | 86.68% | 2.18 | 90.86% |
+| `call --prior norm` | 86.14% | 2.12 | 80.76% |
+| `call --prior hwe --allele-bias fit` | 85.66% | 2.19 | 87.48% |
+| `call --prior hwe` | 84.79% | 2.17 | 80.24% |
+| `call` with polyRAD's settings | 80.02% | 2.00 | 74.57% |
+| `call --prior hwe`, default filters | 99.02% of the 53.0% of pairs with both called | 1.77 | 93.70% |
+| `call --prior norm --allele-bias fit`, default filters | 96.90% of the 65.9% | 2.01 | 93.69% |
+
+- On the same counts `call` with the norm prior and the bias fitted is 0.6
+  points behind updog in agreement between replicates and gives the study's
+  genotype in 91% of cases. The eight clones are ten samples each, which is
+  not a population in Hardy-Weinberg proportions; the norm prior suits it
+  better than the HWE prior by 1 to 1.4 points.
+- The estimate was an overdispersion of 50 and a background rate of 0.002,
+  and 150 and 0.001 with the bias fitted. With the default filters two
+  thirds or less of the pairs are called, and 97 to 99% of those agree.
+- With every row counted, as `call` does by default, the picture is another
+  one: 72.8% (HWE) to 75.9% (norm) of pairs agree, the clones show 3.2
+  different dosages per marker instead of 2.2, and only 36% of the genotypes
+  are the study's. At Chr01_000084128 the Alt row has 7 reads in all 80
+  samples and the study's genotypes have no alternate allele; AltMatch rows
+  with the alternate base carry 7 to 29% of each sample's reads, alike within
+  a clone and different between clones, and `call` gives dosages of 1 and 2.
+- Agreement between replicates cannot rank the two count sets, because a
+  marker that looks monomorphic agrees with itself. The potato comparison
+  above can: there the rows left out are reads of the target's alleles. The
+  lower agreement with every row counted is what more heterozygous
+  genotypes cost in a hexaploid at this overdispersion, and no truth for
+  these clones is at hand to say how many of them are right.
+
 **Tables from updog's and polyRAD's simulators.** To have truth that does not
 come from MADCATS code, read counts were also drawn with the simulators the
 two packages ship (`rgeno` and `rflexdog` in updog; `SimGenotypes` and
@@ -2368,6 +2570,46 @@ not reliably save time. A run with the bias is shortened by more workers, by
 giving `--overdispersion` and `--background-rate` as numbers once a first run
 has estimated them (57 s where the full run takes 170 s), or by a compiled
 kernel, which is not planned.
+
+**Keeping a fitted bias only where it earns its place: measured, not built.**
+Fitting the bias raises agreement with the array by 4 points on the potato
+data and lowers accuracy on tables without bias, by up to 8 points for
+hexaploids pooled from real diploid reads (below). A rule that could be the
+default was tried in a scratch copy of the module: a record keeps its fitted
+bias only when the fit raises the log-likelihood, after the prior on the
+bias, by a set margin over calling without one. Each data set was called with
+`--prior hwe` under the read model its own run with the bias had estimated,
+so that only the rule differs. Share of genotypes right, without filters:
+
+| Data set | No bias (its own read model) | Bias always | Margin 2 | Margin 5 | Margin 10 | Margin 20 |
+|---|---|---|---|---|---|---|
+| Potato, 85 clones, against the array | 92.26% | 96.60% | 96.59% | 96.56% | 96.47% | 96.23% |
+| Potato vendor MADC, diploids | 92.02% | 92.61% | 92.60% | 92.60% | 92.60% | 92.58% |
+| Potato vendor MADC, tetraploids | 86.41% | 91.25% | 91.25% | 91.23% | 91.19% | 91.15% |
+| Delta smelt targets (diploid) | 99.41% | 99.28% | 99.27% | 99.27% | 99.27% | 99.27% |
+| Delta smelt off-target | 99.70% | 99.39% | 99.39% | 99.39% | 99.39% | 99.39% |
+| Pooled tetraploids, 50 reads, targets | 90.56% | 89.65% | 90.17% | 90.46% | 90.53% | 90.64% |
+| Pooled hexaploids, 50 reads, targets | 77.60% | 69.83% | 75.53% | 77.17% | 77.60% | 77.60% |
+| Pooled hexaploids, off-target | 89.03% | 85.92% | 88.03% | 88.56% | 88.99% | 89.03% |
+
+Records that keep a bias at margins 0, 2, 5, 10 and 20: potato 1,513, 1,153,
+965, 789 and 590 of 1,544; the vendor MADC 3,851, 3,266, 2,949, 2,591 and
+2,155 of 3,904; smelt 905, 330, 195, 137 and 84 of 946; pooled tetraploids
+920, 123, 53, 29 and 19 of 946; pooled hexaploids 926, 89, 40, 26 and 18 of
+944.
+
+- A margin of 10 keeps the gain where there is bias (96.47% of 96.60%;
+  91.19% of 91.25%) and removes the loss where there is none (90.53% against
+  90.56%; 77.60% against 77.60%). On real unbiased reads nine records in ten
+  give the bias up; on potato half to two thirds keep it.
+- Smelt stays 0.14 points (targets) and 0.31 (off-target) under the run
+  without bias at every margin. There the loss does not come with the many
+  small biases; it comes with the read model the bias run estimated
+  (overdispersion 200 where the run without bias has 150) or with the few
+  records that keep a large bias.
+- This is evidence for a third setting of `--allele-bias`, not a change:
+  the repository's code is as it was, and whether to add the setting, and
+  whether it should be the default, is open.
 
 **The structure prior (`--prior structure`).** polyRAD's `IteratePopStruct`
 gives each sample its own allele frequencies: it runs a principal component

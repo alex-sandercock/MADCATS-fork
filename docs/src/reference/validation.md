@@ -119,4 +119,13 @@ points on the capture benchmark while costing 2 points of extraction.
   with a 2-base deletion, was labelled `paralog` (450 of 450), and no row of an untouched marker
   was mislabelled (3,348 rows). A copy that is not in the genome is not seen.
 
+- **Alfalfa 3K DArTag, two aligners:** on two tetraploid F1 families and the panel's haplotype
+  database, with a monoploid genome of another cultivar, the filter kept or dropped the same rows
+  as bwa mem for 99.4 to 99.9% and as blastn for 99.3 to 99.7%; bwa mem and blastn agree with each
+  other on 99.4 to 99.8%.
+- **Alfalfa 3K DArTag, inheritance:** mapped genetically in the two families, 97.6% of the rows the
+  filter kept lie at their own marker, and 84 to 95% of the `paralog` rows that the test can
+  judge lie somewhere else. The filter removes 4% of the reads of this panel, against 63% in
+  lettuce.
+
 See [`filter-paralogs`](../commands/filter-paralogs.md#how-it-was-checked).
