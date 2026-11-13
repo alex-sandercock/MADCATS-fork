@@ -2197,6 +2197,51 @@ samples and all three VCF types completes, and `bcftools view` reads its
 output. The prior is not combined with the allelic bias or the selfing rate;
 `call` refuses both combinations.
 
+**Family priors, measured and not built.** updog's `f1` model and polyRAD's
+`PipelineMapping2Parents` give the offspring of a cross the dosages their
+parents' genotypes can segregate into. Whether `call` needs such a prior was
+measured with a test bench (not in the repository) that uses the `call`
+likelihood and, per family and marker, the pair of parental dosages that
+makes the reads most probable, under polysomic inheritance without double
+reduction and with 1% of the prior spread evenly over the dosages for
+off-types.
+
+One biparental population with both parents among the samples is the common
+case. The two alfalfa populations have that; their reads were also thinned,
+parents included, and the calls of the 974 and 986 published markers compared
+with the published dosages, which come from the full depth:
+
+| Population | Mean depth | hwe | norm | structure | F1, both parents' reads | F1, one parent's reads | F1, offspring only |
+|---|---|---|---|---|---|---|---|
+| I195 × J432 | 174 | 90.87% | 90.11% | 90.85% | 91.01% | 90.82% | 90.64% |
+| I195 × J432 | 25 | 84.53% | 84.08% | 84.60% | 85.14% | 84.95% | 84.79% |
+| I195 × J432 | 10 | 75.72% | 76.04% | 75.74% | 76.73% | 76.63% | 76.58% |
+| E115 × F628 | 424 | 90.04% | 89.80% | 89.98% | 90.33% | 90.26% | 90.15% |
+| E115 × F628 | 25 | 82.23% | 82.25% | 82.25% | 82.84% | 82.78% | 82.71% |
+| E115 × F628 | 10 | 74.15% | 74.68% | 74.33% | 75.05% | 74.99% | 74.94% |
+
+With both parents' reads the F1 prior is 0.1 to 0.3 points above the best of
+the three priors `call` has at full depth, 0.5 to 0.6 at 25 reads and 0.4 to
+0.7 at 10. The parents' reads account for 0.1 to 0.4 of that; the rest comes
+from the segregation shape, which a family of this size shows by itself.
+
+Many small families are the other case. On the potato half-diallel (ten
+families of 1 to 20) and on fifteen simulated full-sib families of 20:
+
+| Data | Mean depth | hwe | structure | F1, parents estimated from offspring | F1, parental genotypes given |
+|---|---|---|---|---|---|
+| Simulated families | 8 | 70.8% | 73.8% | 75.0% | |
+| Simulated families | 25 | 82.0% | 83.9% | 84.9% | |
+| Potato, thinned | 10 | 70.9% | 71.8% | 71.8% | 76.1% |
+| Potato, thinned | 25 | 80.7% | 81.4% | 81.1% | 84.1% |
+| Potato, full depth | about 300 | 92.3% | 92.3% | 92.3% | 93.4% |
+
+Only parental genotypes known from elsewhere help much here; those given were
+the article's phased parents, from array data and linkage analysis, which are
+better than a parent's own reads would give. That needs a pedigree, which is
+often not available, and is not built. A single biparental population gains
+under a point from an F1 prior, so that is not built either.
+
 **Other checks.** On the bundled example all 96 target and 96 haplotype
 genotypes equal the simulated truth. `bcftools view` reads the three VCF types
 without warnings, including mixed-ploidy output. Output is identical for any
