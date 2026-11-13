@@ -304,6 +304,10 @@ It kept 113,667 rows, with 35.7% of the reads. See the
   54-base tags were placed where their 361-base design sequence lies, 0.5 to 0.9% in another
   copy, and the rest left unplaced; and more rows were labelled `paralog` or `ambiguous` (7.5%
   of the larger family's rows against 3.9% on the design genome).
+- **Tiled markers.** Two markers that read the same tag window (`generate --tile-groups`) are
+  placed at the same site, and none of their rows is taken for a copy of the other: on a
+  synthetic panel of two tiles every row was `on_target`, whether the tags hold the other tile's
+  variant as an ambiguity code or as the reference base.
 - Output does not depend on `--jobs`.
 
 ## See Also

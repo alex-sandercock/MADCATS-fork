@@ -415,6 +415,15 @@ check on consistency, not independent evidence. Off-target insertions and deleti
 written as records yet. A substitution carried by several haplotypes gets one record with their
 reads added together, and is called exactly as a two-allele marker with those reads would be.
 
+A position where the Ref tag holds an ambiguity code gets no off-target record. DArTag panels
+write a second designed variant inside a tag that way, and it has a marker of its own.
+
+Tiled markers (`generate --tile-groups`) share the reads of their amplicon, and each is called
+from all of them. Each tile's target is its own variant. Where a tile's tag holds the reference
+base at another tile's variant, not an ambiguity code, that variant is also written as an
+off-target record of this tile, with the same genotypes as the other tile's target record; and
+the tiles' haplotype records describe the same sequences. Count such a variant once downstream.
+
 On simulated microhaplotype tables (diploid and tetraploid, 8 to 150 reads) off-target records were
 called as accurately as target records, whether a substitution was on one haplotype or shared by
 two, and 96 to 99.8% of the off-target genotypes that passed the default filters were right. On

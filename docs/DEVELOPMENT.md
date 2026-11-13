@@ -1865,6 +1865,28 @@ and for this panel that is set 1.
 Not covered: FASTQs of this panel, and so a MADC from `generate` (no public
 alfalfa DArTag reads were found); and planted copies in these genomes.
 
+Tiled markers with the paralog filter and `call`. `generate` credits a read
+that fits several tiles of one amplicon to each of them (`--tile-groups`);
+that work and the two new commands were written on separate branches and
+first met when they were merged. A synthetic panel checks them together
+(`tests/test_tiled_markers.py`): two tiles with variants at tag positions 31
+and 56 of one 81-base window, a third marker elsewhere, ten diploid samples
+with every combination of the two variants, and the tags written both ways a
+tile's tag can carry the other tile's variant, as an ambiguity code (the
+DArTag way) and as the reference base.
+
+- `generate` gives both tiles all 60 reads of every sample. With ambiguity
+  codes in the tags no read equals a Ref or Alt tag, so those two rows are
+  empty and every read is on a RefMatch or AltMatch row; a genotype taken
+  from the Ref and Alt rows alone would have no reads.
+- `filter-paralogs` places both tiles at the one site and labels every row
+  `on_target`; the filtered table is the table it was given.
+- `call` gives each tile the true dosage of its own variant in every sample.
+  With the reference base in the tag, each tile's `all` VCF also has the other
+  tile's variant as an off-target record, with that tile's target genotypes;
+  with an ambiguity code there the position gets no off-target record, and
+  the variant is reported once.
+
 ## Genotype calling (`call`, unreleased)
 
 `madcats call` (in `madcats_call.py`) calls genotypes from a MADC and writes
