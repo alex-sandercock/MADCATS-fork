@@ -140,8 +140,8 @@ class PlacementTests(unittest.TestCase):
     contigs = {"Chr1", "Chr2", "scaffold_12"}
 
     def test_clone_position_parsing(self):
-        self.assertEqual(fp.clone_position("Chr1_000333995", self.contigs), (("Chr1", 333995), "agree"))
-        self.assertEqual(fp.clone_position("scaffold_12_000345", self.contigs), (("scaffold_12", 345), "agree"))
+        self.assertEqual(fp.clone_position("Chr1_000333995", self.contigs), (("Chr1", 333995), None))
+        self.assertEqual(fp.clone_position("scaffold_12_000345", self.contigs), (("scaffold_12", 345), None))
         self.assertEqual(fp.clone_position("marker7", self.contigs), (None, "no_position"))
         self.assertEqual(fp.clone_position("Chr9_100", self.contigs), (None, "contig_absent"))
 
