@@ -2085,9 +2085,56 @@ Every row has 99.8–99.9% of calls within one copy.
   HWE prior gives 92.41%, leaving 210 genotypes uncalled, and its structure
   prior stops with an error (a regression with no usable cases).
 
-The whole deposit (703 and 375 samples, with a MADC for the second panel
-version) is on Dryad, doi:10.5061/dryad.8pk0p2nw4, whose files need a Dryad
-account to download through the API.
+**The whole potato deposit, and the paper's own error table.** The deposit
+of Endelman et al. (2024) is on Dryad (doi:10.5061/dryad.8pk0p2nw4, CC0) with
+a copy on Zenodo (record 11286799). File S1 has the DArTag read counts of 703
+tetraploid samples at the 2,503 markers of the first panel version, File S5
+the array genotypes of 298 of them, and File S12 the paper's error of the
+DArTag genotypes (updog's `norm`, stored in File S1) against the array for
+each of the 1,862 markers that are in both files with the same alleles. All
+703 samples were called together, without filters, and scored on the 298 with
+array genotypes. The median depth is 201 reads per sample and marker.
+
+The first three columns are File S12's measures, per marker over the genotypes
+with an array dosage, as mean and median over the 1,862 markers: the root mean
+squared error, the share with another dosage, and the share in another class
+of absent, mixed and fixed. The last column is the share of all 550,052
+genotypes with reads that have the array's dosage.
+
+| Caller | RMSE: mean, median | Another dosage: mean, median | Another class: mean, median | Same dosage, all genotypes |
+|---|---|---|---|---|
+| File S12 as published | 0.363, 0.224 | 13.4%, 5.0% | 6.5%, 0.7% | |
+| updog `norm` as stored in File S1 | 0.363, 0.224 | 13.4%, 5.0% | 6.5%, 0.7% | 87.15% |
+| `call --prior hwe --allele-bias fit` | 0.347, 0.224 | 12.9%, 5.0% | 5.8%, 0.7% | 87.46% |
+| `call --prior norm --allele-bias fit` | 0.349, 0.232 | 12.9%, 5.0% | 5.9%, 0.7% | 87.45% |
+| `call --prior hwe` (the defaults) | 0.415, 0.278 | 17.5%, 7.7% | 7.1%, 0.7% | 82.81% |
+| `call --prior norm` | 0.418, 0.278 | 17.6%, 7.7% | 7.2%, 0.7% | 82.74% |
+| `call --prior structure` | 0.412, 0.278 | 17.3%, 7.4% | 7.1%, 0.7% | 83.02% |
+| polyRAD `IterateHWE`, overdispersion 75 | 0.414, 0.284 | 17.4%, 7.7% | 6.7%, 1.0% | 83.02% |
+| polyRAD `IteratePopStruct`, overdispersion 75 | 0.413, 0.278 | 17.2%, 7.7% | 6.7%, 1.0% | 83.23% |
+| `call` with polyRAD's settings | 0.498, 0.393 | 22.6%, 15.4% | 7.9%, 4.0% | 77.73% |
+| polyRAD `IterateHWE`, overdispersion 9 | 0.502, 0.393 | 22.6%, 15.4% | 7.9%, 4.0% | 77.72% |
+| polyRAD `IteratePopStruct`, overdispersion 9 | 0.474, 0.362 | 20.4%, 12.8% | 7.4%, 3.4% | 80.03% |
+
+- The stored genotypes scored here give File S12's figures to the last
+  decimal, so these columns measure what the paper measured.
+- With the bias fitted `call` has the paper's median error and a lower mean:
+  12.9% of genotypes with another dosage against 13.4%. The estimate was an
+  overdispersion of 150 and a background rate of 0.003.
+- Without the bias (estimate 75 and 0.005) `call` is 4.6 points behind, level
+  with polyRAD given the same overdispersion and 5 points ahead of polyRAD's
+  defaults. Fitting the bias is worth as much here as on the 85 clones.
+- The structure priors add 0.2 points in both tools. polyRAD's finished at an
+  overdispersion of 75 with 703 samples; with 85 it stopped with an error.
+- Agreement is lower than on the 85 clones for every caller because the
+  markers are not selected: at 331 of the 1,862 markers fewer than 80% of the
+  stored genotypes have the array's dosage, and at 153 fewer than half. No
+  sample is under 60%, and the median marker is at 95%. The disagreement is
+  between the two assays at particular markers, which is why the medians say
+  more than the means.
+- On four workers that other jobs were also using, `call` took 19 s with the
+  HWE prior, 38 s with the structure prior, and 233 s (HWE) and 432 s (norm)
+  with the bias fitted; polyRAD's structure model took 90 s.
 
 **Tables from updog's and polyRAD's simulators.** To have truth that does not
 come from MADCATS code, read counts were also drawn with the simulators the
@@ -2555,11 +2602,45 @@ genotypes kept that are right and the share kept:
 - With the default filters 96 to 99.8% of the off-target genotypes kept are
   right.
 
-Not covered: in these tables a substitution is on one haplotype only and
-never on the Alt tag. In real tags several haplotypes can share one, and
-their reads are then added together for its record; no table of that kind
-with truth has been scored. Real data with known off-target genotypes has not
-been tested either.
+**Off-target substitutions shared by haplotypes.** In the tables above a
+substitution is on one haplotype only and never on the Alt tag. In real tags
+several haplotypes can carry the same one, and their reads are then added
+together for its record. The same reads and true haplotype dosages were given
+other stand-in tags: one substitution is on two of the haplotypes with the
+reference base at the target, a second is on two as well, and a third is on a
+haplotype that has the target's alternate base, so that the target's record
+adds two haplotypes too. The true dosage of a substitution is the sum over the
+haplotypes that carry it. Of the 760 off-target records 311 add two
+haplotypes, and 149 of the 300 target records do. Share of genotypes with
+reads called correctly, as in the table above:
+
+| Ploidy | Population | Mean depth | hwe: target, off-target | structure: target, off-target | norm: target, off-target | hwe, default filters: target right, kept | hwe, default filters: off-target right, kept |
+|---|---|---|---|---|---|---|---|
+| 4 | One population | 25 | 82.8%, 85.4% | 82.8%, 85.4% | 82.8%, 85.4% | 97.0%, 47% | 97.4%, 53% |
+| 4 | Three groups | 8 | 73.4%, 76.5% | 75.9%, 78.8% | 74.2%, 77.3% | 96.2%, 16% | 96.6%, 19% |
+| 4 | Three groups | 25 | 83.9%, 86.1% | 85.2%, 87.3% | 84.3%, 86.5% | 97.6%, 50% | 97.8%, 56% |
+| 4 | Three groups | 150 | 90.2%, 91.6% | 91.0%, 92.2% | 90.3%, 91.7% | 98.3%, 69% | 98.6%, 73% |
+| 4 | Families | 8 | 71.9%, 75.7% | 74.9%, 77.9% | 72.1%, 75.8% | 95.9%, 15% | 96.0%, 18% |
+| 4 | Families | 25 | 83.0%, 85.5% | 84.6%, 86.8% | 83.0%, 85.6% | 97.0%, 47% | 97.4%, 54% |
+| 2 | Three groups | 8 | 95.8%, 96.3% | 96.0%, 96.5% | 95.8%, 96.3% | 99.8%, 33% | 99.8%, 33% |
+| 2 | Families | 8 | 95.4%, 96.0% | 96.0%, 96.4% | 95.5%, 96.0% | 99.7%, 33% | 99.7%, 33% |
+
+- A record that adds the reads of several haplotypes is the same call as a
+  two-allele marker with those reads. The reads of the carriers and of the
+  other haplotypes were added up outside `call` and called as two-row markers
+  under the same overdispersion and background rate: all 2,538,900 genotypes
+  of the eight tables are the same as in the `all` VCF.
+- Fewer genotypes are right than in the tables with one haplotype per
+  substitution (by 1 to 6 points for tetraploids, under 1 for diploids)
+  because the added alleles are more frequent: a mean of 0.33 against 0.25 at
+  targets and 0.29 against 0.21 at off-target records, so more genotypes have
+  a dosage in the middle, where neighbouring dosages are harder to tell
+  apart.
+- Off-target records are still called as well as target records, the priors
+  rank as before, and with the default filters 96 to 99.8% of the genotypes
+  kept are right.
+
+Real off-target genotypes are tested in the delta smelt comparison below.
 
 **The polyRAD paper's own benchmark.** Clark et al. (2019) tested polyRAD on
 read depths simulated from real genotypes: SNP-array and GoldenGate genotypes

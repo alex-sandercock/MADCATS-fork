@@ -371,10 +371,15 @@ read, which ends a few bases away from where the Ref tag ends.
 
 In the `all` VCF, the three record kinds come from the same reads, so agreement between them is a
 check on consistency, not independent evidence. Off-target insertions and deletions are not
-written as records yet. On simulated microhaplotype tables (diploid and tetraploid, 8 to 150
-reads) off-target records were called as accurately as target records, and 96 to 99.8% of the
-off-target genotypes that passed the default filters were right; real data with known off-target
-genotypes has not been tested.
+written as records yet. A substitution carried by several haplotypes gets one record with their
+reads added together, and is called exactly as a two-allele marker with those reads would be.
+
+On simulated microhaplotype tables (diploid and tetraploid, 8 to 150 reads) off-target records were
+called as accurately as target records, whether a substitution was on one haplotype or shared by
+two, and 96 to 99.8% of the off-target genotypes that passed the default filters were right. On
+real reads of 96 diploid delta smelt, 99.8% of the off-target genotypes that passed the default
+filters agreed with genotypes called from alignments of the same reads, against 99.6% at the
+targets.
 
 ## See Also
 
