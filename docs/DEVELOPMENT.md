@@ -1655,11 +1655,13 @@ each row maps genetically.
   tags; E115 x F628 has 374 samples, 2,989 markers and 8,731 rows of 81-base
   tags. The panel's haplotype database (23,469 haplotypes, Zenodo
   doi:10.5281/zenodo.10681524) was run as a third table.
-- Genome: the monoploid assembly of cultivar Bolivia (GCA_051527215.1, eight
-  gapless chromosomes, 776 Mb). The panel was designed on XinJiangDaYe, whose
-  assembly is on figshare and was not reachable, so this is a genome of
-  another cultivar: the panel's 361-base design sequences differ from it at a
-  median of 3 bases, and at 17 or more for a tenth of the markers.
+- Genomes: first the monoploid assembly of cultivar Bolivia (GCA_051527215.1,
+  eight gapless chromosomes, 776 Mb), a genome of another cultivar than the
+  panel's: the panel's 361-base design sequences differ from it at a median
+  of 3 bases, and at 17 or more for a tenth of the markers. Then the genome
+  the panel was designed on, chromosome set 1 of XinJiangDaYe (see "The
+  design genome" below). The first shows what a user gets without the design
+  genome, the second what the filter does where it is meant to run.
 - A marker's home on this genome is where its design sequence (180 bases
   either side of the target, from the panel's probe table) aligns. bwa mem
   placed 2,745 of the 3,000 uniquely and minimap2 2,780; the 2,735 that both
@@ -1779,6 +1781,53 @@ tetraploid cross has (two copies in each parent leave 1 progeny in 36 without
 it); it differs from the Ref tag at five bases and matches a copy 10 kb away
 better.
 
+The design genome. The panel's probe table names
+`M_sativa_genome_XinJiangDaYe_set1_v1.fasta`, and every CloneID is on a
+chromosome named `chrN.1`: the panel was designed on one of the four
+chromosome sets of the XinJiangDaYe assembly (figshare,
+doi:10.6084/m9.figshare.12327602, CC BY 4.0; `chr1.1` to `chr8.4` and 9,789
+unplaced sequences). Set 1, `chr1.1` to `chr8.1`, was taken as the genome and
+the MADCs were run as they are, in the default mode, so that their own
+CloneIDs are the positions. bwa mem places 2,984 of the 3,000 design
+sequences uniquely and minimap2 2,992, every one at the position its CloneID
+names and without a single difference, so here a marker's home is its CloneID
+position.
+
+| | E115 x F628, 81-base tags | I195 x J432, 54-base tags | Haplotype database |
+|---|---|---|---|
+| Markers placed at their CloneID position | 2,989 of 2,989 | 2,999 of 2,999 | 3,000 of 3,000 |
+| Of them, Ref tags with several equal-best sites, settled by the position | 17 | 34 | 17 |
+| Rows `on_target`, `paralog`, `ambiguous` | 8,388, 207, 136 | 7,211, 145, 159 | 22,309, 680, 480 |
+| Share of reads on those rows | 96.0%, 2.2%, 1.8% | 94.6%, 2.6%, 2.8% | |
+| Rows dropped, and their reads | 296, 2.6% | 202, 3.0% | 1,113 |
+| Same label as bwa mem, same decision | 99.61%, 99.85% | 99.48%, 99.76% | 99.32%, 99.69% |
+| Same label as blastn, same decision | 99.59%, 99.72% | 99.49%, 99.68% | 99.10%, 99.43% |
+| Kept rows linked at home | 3,053 of 3,184 (95.9%) | 2,740 of 2,845 (96.3%) | |
+| `paralog` rows: linked elsewhere, at home with the other site far away, at home with it near | 29, 3, 27 | 17, 1, 33 | |
+
+- On the design genome no marker is unplaced or put in another copy, with
+  CloneID positions or without them (`ignore` leaves the 17 and 34 Ref tags
+  with several sites unsettled and changes nothing else), and the 54-base
+  tags are placed as well as the 81-base ones. On the other cultivar's
+  genome 1 to 7% were unplaced.
+- Fewer rows are labelled: 207 `paralog` and 136 `ambiguous` in the larger
+  family against 357 and 297 on the other genome, and no row is `unplaced`
+  against 140. A genome of another cultivar makes some alleles look like
+  copies.
+- The filter keeps or drops the same rows as bwa mem for 99.7 to 99.9% and as
+  blastn for 99.4 to 99.7%, as on the other genome.
+- Of the `paralog` rows that linkage can decide, 91% (29 of 32) and 94% (17
+  of 18) map elsewhere. Of the kept rows 96% map to their marker; the others
+  are mostly at some 60 markers where every kept row maps elsewhere (102 of
+  131 rows at 63 markers, and 86 of 105 at 54), where the marker is somewhere
+  else in the family than in this assembly. Apart from those, 29 and 19 kept
+  rows, under 1% of those judged, map away from their marker.
+- Genotypes do not gain: against the published dosages the larger family
+  stays at 89.80% and the smaller goes from 90.11% to 89.93%. In alfalfa the
+  filter removes 2.6 to 3.0% of the reads, its labels hold up against two
+  aligners and against inheritance, and there is no measurable effect on the
+  target genotypes; it is a panel that does not need it.
+
 A haplotype-resolved reference. The assembly the alfalfa panel was designed
 on has four copies of every chromosome, and the panel used one set of them.
 What the filter does when it is given more than one set was measured with
@@ -1801,12 +1850,20 @@ Alt rows are kept only because canonical rows always are. A row that is the
 other haplotype's allele matches that haplotype better and is labelled
 `paralog`; one that both haplotypes carry is `ambiguous`. CloneID positions
 place the markers (1,148 at one site against 648) and do not help the rows.
-A polyploid or haplotype-resolved assembly has to be cut down to one set of
-chromosomes before it is given to the filter.
 
-Not covered: the design genome; FASTQs of this panel, and so a MADC from
-`generate` (no public alfalfa DArTag reads were found); and planted copies in
-this genome.
+The design assembly itself says the same. With sets 1 and 2 of XinJiangDaYe
+as the genome and the larger family's whole MADC, 1,199 of the 2,989 Ref
+tags have an identical copy on set 2 (all settled by the CloneID position),
+3,757 rows are `ambiguous` and 1,229 `paralog` where 136 and 207 were, and
+1,969 of the 2,753 RefMatch and AltMatch rows are dropped where 296 were;
+3,017 Ref and Alt rows are kept only as canonical rows. Indexing two sets
+(1.6 Gb) took 8.3 GB of memory; three sets and all four (2.7 Gb) did not fit
+in the 13 GB available here. A polyploid or haplotype-resolved assembly has
+to be cut down to one set of chromosomes before it is given to the filter,
+and for this panel that is set 1.
+
+Not covered: FASTQs of this panel, and so a MADC from `generate` (no public
+alfalfa DArTag reads were found); and planted copies in these genomes.
 
 ## Genotype calling (`call`, unreleased)
 

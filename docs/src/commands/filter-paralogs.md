@@ -257,11 +257,12 @@ It kept 113,667 rows, with 35.7% of the reads. See the
 - Give the filter one set of chromosomes. In a reference that carries every haplotype (or, in an
   autopolyploid, every copy of each chromosome), a tag has a copy on each, and those copies are
   treated as any other: an allele that sits on another haplotype is labelled `paralog`, and one
-  that two haplotypes share makes the rows `ambiguous`. On alfalfa, with three chromosomes of
-  one haplotype as the genome the filter dropped 115 of 992 RefMatch and AltMatch rows; with a
-  second haplotype of the same cultivar added it dropped 637, and 45% of the reads were on
-  `ambiguous` rows. CloneID positions do not prevent this. Cut such an assembly down to one
-  haplotype (for a panel designed on one, that one) before indexing it.
+  that two haplotypes share makes the rows `ambiguous`. The alfalfa panel was designed on
+  chromosome set 1 of an assembly that has four sets: with set 1 as the genome the filter
+  dropped 296 of 2,753 RefMatch and AltMatch rows of a family's MADC; with set 2 added it
+  dropped 1,969, and 46% of the reads were on `ambiguous` rows. CloneID positions do not prevent
+  this. Cut such an assembly down to one set (for a panel designed on one, that one) before
+  indexing it. All four sets (2.7 Gb) also needed more than 13 GB of memory to index.
 - On a genome of another cultivar than the panel's, some Ref tags do not match their own site
   best. With `--clone-positions ignore` on such a genome for alfalfa, 0.5 to 0.9% of the markers
   were placed in another copy and 1% (81-base tags) to 7% (54-base tags) were left unplaced,
@@ -278,23 +279,31 @@ It kept 113,667 rows, with 35.7% of the reads. See the
   genome, with CloneID positions or without. Markers given a wrong position were left unplaced,
   not placed elsewhere.
 - **Against bwa mem.** The lettuce figures above.
-- **Alfalfa, against bwa mem and blastn.** Two tetraploid F1 families of the alfalfa 3K panel
-  (7,517 rows of 54-base tags and 8,731 rows of 81-base tags) and the panel's haplotype database
-  (23,469 haplotypes) were run on a monoploid genome of another cultivar than the one the panel
-  was designed on. Every row was also aligned with bwa mem and with blastn and labelled from
-  each aligner's own score. The filter kept or dropped the same rows as bwa mem for 99.4 to
-  99.9% of rows and as blastn for 99.3 to 99.7%; the two aligners agree with each other on 99.4
-  to 99.8%.
+- **Alfalfa, on its design genome.** Two tetraploid F1 families of the alfalfa 3K panel (7,517
+  rows of 54-base tags and 8,731 rows of 81-base tags) and the panel's haplotype database (23,469
+  haplotypes) were run on the genome the panel was designed on, chromosome set 1 of XinJiangDaYe,
+  with their own CloneIDs. Every marker was placed at its CloneID position (2,989, 2,999 and
+  3,000), with the positions or with `--clone-positions ignore`. The filter labelled 2 to 3% of
+  the reads `paralog` and as many `ambiguous`.
+- **Alfalfa, against bwa mem and blastn.** Every row was also aligned to that genome with bwa mem
+  and with blastn and labelled from each aligner's own score. The filter kept or dropped the same
+  rows as bwa mem for 99.7 to 99.9% of rows and as blastn for 99.4 to 99.7%. On a monoploid genome
+  of another alfalfa cultivar the figures were 99.4 to 99.9% and 99.3 to 99.7%, and the two
+  aligners agreed with each other on 99.4 to 99.8%.
 - **Alfalfa, by inheritance.** In those families a row can be mapped without aligning it, by the
-  rows of other markers it is inherited with. Of the rows the filter kept, 97.6% map to their own
-  marker in both families. Of the rows labelled `paralog` whose better site is far from the
-  marker, 84 to 95% map away from it, most of them to the region the filter named. A row
-  whose better site is a nearby copy on the same chromosome is inherited with the marker, and
-  this test cannot judge it.
-- **Alfalfa, placement.** With `--clone-positions ignore` on that genome, 97.8% of the markers
-  with 81-base tags and 91.0% of those with 54-base tags were placed where their 361-base design
-  sequence lies, 0.5 to 0.9% in another copy, and the rest left unplaced. With CloneIDs that are
-  positions on the genome given, all but 7 of 2,734 were placed there.
+  rows of other markers it is inherited with. Of the rows the filter kept, 96% map to their own
+  marker, and most of the others are at some 60 markers where every row maps elsewhere than the
+  assembly puts the marker. Of the rows labelled `paralog` whose better site is far from the
+  marker, 91 and 94% map away from it. A row whose better site is a nearby copy on the same
+  chromosome is inherited with the marker, and this test cannot judge it.
+- **Alfalfa, genotypes.** Target genotypes called before and after the filter agree with the
+  families' published dosages equally often (89.8% and 89.8%; 90.1% and 89.9%). This panel has
+  few paralog reads, and filtering it changes little.
+- **Alfalfa, without the design genome.** On the other cultivar's genome with
+  `--clone-positions ignore`, 97.8% of the markers with 81-base tags and 91.0% of those with
+  54-base tags were placed where their 361-base design sequence lies, 0.5 to 0.9% in another
+  copy, and the rest left unplaced; and more rows were labelled `paralog` or `ambiguous` (7.6%
+  of the larger family's rows against 3.9% on the design genome).
 - Output does not depend on `--jobs`.
 
 ## See Also

@@ -157,13 +157,16 @@ See [`call`](../commands/call.md).
   with a 2-base deletion, was labelled `paralog` (450 of 450), and no row of an untouched marker
   was mislabelled (3,348 rows). A copy that is not in the genome is not seen.
 
-- **Alfalfa 3K DArTag, two aligners:** on two tetraploid F1 families and the panel's haplotype
-  database, with a monoploid genome of another cultivar, the filter kept or dropped the same rows
-  as bwa mem for 99.4 to 99.9% and as blastn for 99.3 to 99.7%; bwa mem and blastn agree with each
-  other on 99.4 to 99.8%.
-- **Alfalfa 3K DArTag, inheritance:** mapped genetically in the two families, 97.6% of the rows the
-  filter kept lie at their own marker, and 84 to 95% of the `paralog` rows that the test can
-  judge lie somewhere else. The filter removes 4% of the reads of this panel, against 63% in
-  lettuce.
+- **Alfalfa 3K DArTag, design genome:** on two tetraploid F1 families and the panel's haplotype
+  database, with chromosome set 1 of XinJiangDaYe as the genome, every marker was placed at its
+  CloneID position, and the filter kept or dropped the same rows as bwa mem for 99.7 to 99.9% and
+  as blastn for 99.4 to 99.7%.
+- **Alfalfa 3K DArTag, inheritance:** mapped genetically in the two families, 96% of the rows the
+  filter kept lie at their own marker, and 91 to 94% of the `paralog` rows that the test can
+  judge lie somewhere else. The filter removes 3% of the reads of this panel, against 63% in
+  lettuce, and the target genotypes are the same with and without it.
+- **Alfalfa 3K DArTag, more than one chromosome set:** with a second set of the design assembly
+  in the genome the filter dropped 1,969 of 2,753 RefMatch and AltMatch rows where it dropped 296
+  with one. A haplotype-resolved or polyploid assembly has to be cut down to one set first.
 
 See [`filter-paralogs`](../commands/filter-paralogs.md#how-it-was-checked).
