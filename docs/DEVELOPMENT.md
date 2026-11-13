@@ -2644,21 +2644,25 @@ the R1 reads gave 1,527 allele rows and assigned about 100,000 reads per
 fish, some 280 per marker. `call --vcf all --ploidy 2` wrote 368 target records and 615
 off-target records; 467 of the off-target records are a SNP of the comparison
 VCF with the same two bases (111 are not in it, 36 have more than two alleles
-and 1 has other bases). Agreement with the comparison genotype where it rests
-on 10 or more reads:
+and 1 has other bases). Agreement with the comparison genotype:
 
-| Caller | Targets (35,191 genotypes) | Off-target SNPs (44,799) |
+| Caller | Targets (35,073 genotypes) | Off-target SNPs (44,777) |
 |---|---|---|
-| `call --prior hwe` (the defaults; overdispersion 150, background 0.003) | 99.57% of the 98.4% called | 99.80% of the 99.1% called |
-| `call --prior norm` | 99.58% of 98.4% | 99.81% of 99.1% |
-| `call --prior structure` (5 neighbours) | 99.58% of 98.5% | 99.80% of 99.1% |
-| `call --prior hwe --allele-bias fit` | 99.42% of 98.5% | 99.48% of 99.1% |
-| `call` with polyRAD's settings | 99.20% of 97.8% | 99.43% of 98.7% |
-| `call --prior hwe`, no filters | 99.41% of 99.7% | 99.70% of 100% |
-| polyRAD `IterateHWE`, overdispersion 9 | 98.66% | 99.06% |
-| polyRAD `IteratePopStruct`, overdispersion 9 | 98.80% | 99.12% |
-| polyRAD `IterateHWE`, overdispersion 150 | 99.33% of 99.7% | 99.65% |
-| updog `norm` | 99.21% | 99.36% |
+| `call --prior hwe` (the defaults; overdispersion 150, background 0.003) | 99.57% of the 98.8% called | 99.80% of the 99.1% called |
+| `call --prior norm` | 99.58% of 98.8% | 99.81% of 99.1% |
+| `call --prior structure` (5 neighbours) | 99.58% of 98.8% | 99.80% of 99.1% |
+| `call --prior hwe --allele-bias fit` | 99.42% of 98.8% | 99.48% of 99.1% |
+| `call` with polyRAD's settings | 99.20% of 98.1% | 99.43% of 98.7% |
+| `call --prior hwe`, no filters | 99.41% | 99.70% |
+| polyRAD `IterateHWE`, overdispersion 9 | 98.71% | 99.08% |
+| polyRAD `IteratePopStruct`, overdispersion 9 | 98.85% | 99.13% |
+| polyRAD `IterateHWE`, overdispersion 150 | 99.38% of the 99.7% called | 99.66% |
+| updog `norm` | 99.27% | 99.38% |
+
+Every row is scored on the same genotypes: those where the sample has reads
+at the record and the comparison genotype rests on 10 or more reads. polyRAD
+and updog also give a genotype where a sample has no reads; those are left
+out.
 
 polyRAD and updog were given the reference and alternate counts of the 947
 two-allele records and call every genotype, so the row to compare them with is
@@ -2666,8 +2670,8 @@ two-allele records and call every genotype, so the row to compare them with is
 
 - On real diploid reads `call` with its defaults agrees with the
   alignment-based genotypes more often than polyRAD or updog do on the same
-  counts: by 0.2 points on targets and 0.3 on off-target SNPs over updog, and
-  by 0.75 and 0.64 over polyRAD's defaults.
+  counts: by 0.14 points on targets and 0.32 on off-target SNPs over updog,
+  and by 0.70 and 0.62 over polyRAD's defaults.
 - Off-target SNPs are called as well as targets, here on real reads; the
   simulated tables under "Off-target records" said the same.
 - Fitting the bias lowers the agreement, by 0.15 points on targets and 0.3 on
