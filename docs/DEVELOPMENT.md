@@ -2136,6 +2136,63 @@ genotypes with reads that have the array's dosage.
   HWE prior, 38 s with the structure prior, and 233 s (HWE) and 432 s (norm)
   with the bias fitted; polyRAD's structure model took 90 s.
 
+**A vendor MADC with diploid and tetraploid samples (potato, second panel
+version).** File S4 of the same deposit is the MADC as DArT delivered it for
+the second panel version: 375 samples, 52 of them diploid, and 3,915 markers.
+File S3 has the paper's genotypes of those samples, and File S13 its error
+against the array per marker, as the share of genotypes in another class of
+absent, mixed and fixed (the measure that suits both ploidies). `call` read
+File S4 as it is, with `--ploidy 4` and a `--ploidy-file` naming the diploids
+(each sample's ploidy was read from its genotypes in File S3). It wrote 3,906
+target records, 5,879 records in the `all` VCF and 3,915 haplotype records;
+nine markers have no target record because their Ref and Alt tags differ at
+more than one position. The median depth is 273 reads. 78 samples are on the
+array (38 diploid, 40 tetraploid), and 2,603 markers are in both files with
+the same alleles and have a target record: 202,143 genotypes with reads.
+
+| Caller | Same dosage: all | Diploids (98,339) | Tetraploids (103,804) | Another class, per marker: mean, median |
+|---|---|---|---|---|
+| File S13 as published | | | | 5.3%, 3% |
+| Genotypes stored in File S3 | 91.83% | 92.61% | 91.09% | 5.3%, 2.6% |
+| `call --prior hwe --allele-bias fit` | 91.91% | 92.61% | 91.25% | 5.1%, 2.6% |
+| `call --prior norm --allele-bias fit` | 91.89% | 92.58% | 91.23% | 5.1%, 2.6% |
+| `call --prior hwe` (the defaults, no filters) | 89.14% | 92.02% | 86.41% | 5.7%, 2.6% |
+| `call --prior norm` | 88.80% | 92.04% | 85.74% | 5.7%, 2.6% |
+| `call --prior structure` | 89.31% | 92.03% | 86.74% | 5.7%, 2.6% |
+| polyRAD `IterateHWE`, overdispersion 30 | 89.38% | 92.28% | 86.62% | 5.4%, 2.6% |
+| polyRAD `IteratePopStruct`, overdispersion 30 | 89.60% | 92.31% | 87.03% | 5.4%, 2.6% |
+| `call` with polyRAD's settings | 86.25% | 92.62% | 80.21% | 6.6%, 3.8% |
+| polyRAD `IterateHWE`, overdispersion 9 | 86.23% | 92.60% | 80.20% | 6.6%, 3.8% |
+| polyRAD `IteratePopStruct`, overdispersion 9 | 87.80% | 92.64% | 83.22% | 6.2%, 3.8% |
+
+File S13 is rounded to two decimals; the stored genotypes scored here give a
+mean of 5.30% against its 5.28%.
+
+- A vendor MADC of mixed ploidy is called in one run, and with the bias
+  fitted the result is level with the paper's genotypes for the diploids and
+  0.2 points above them for the tetraploids. The estimate was an
+  overdispersion of 100 and a background rate of 0.003; 1,507 of the 3,904
+  fitted biases are outside 0.8 to 1.25.
+- Without the bias (estimate 30 and 0.005) the tetraploids are 4.8 points
+  behind, level with polyRAD at the same overdispersion and 6.2 points ahead
+  of polyRAD's defaults.
+- For the diploids the defaults are 0.6 points behind polyRAD's settings. The
+  two differ in 1,512 diploid genotypes at 528 markers. In 1,034 the array has
+  a heterozygote that the defaults call as fixed and polyRAD's settings as
+  mixed; in 445 the array has a fixed genotype that the defaults get right.
+  These are markers where one allele gives few reads: a diploid heterozygote
+  with 210 reference and 47 alternate reads, at a marker with a fitted bias of
+  0.27, is called without the alternate allele under an overdispersion of 30,
+  because with a background rate the homozygote's distribution has a long
+  tail, and as mixed under an overdispersion of 9, which lets a heterozygote
+  stray further from half. Fitting the bias settles it: 92.61%.
+- With the default filters 87.5% of the genotypes are called (98.4% of the
+  diploid, 77.1% of the tetraploid) and 92.2% of those have the array's
+  dosage.
+- On shared workers the run that wrote all three VCFs took 88 s, the norm
+  prior 34 s, the structure prior 63 s, and the runs with the bias 159 to
+  169 s; polyRAD's structure model took 113 to 200 s.
+
 **Tables from updog's and polyRAD's simulators.** To have truth that does not
 come from MADCATS code, read counts were also drawn with the simulators the
 two packages ship (`rgeno` and `rflexdog` in updog; `SimGenotypes` and
