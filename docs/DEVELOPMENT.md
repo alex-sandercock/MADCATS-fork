@@ -3088,6 +3088,58 @@ two-allele records and call every genotype, so the row to compare them with is
 - The comparison genotypes come from the same reads, so this measures
   agreement between callers and not error against an independent assay.
 
+**Polyploids pooled from real diploid reads.** No public panel has both a
+vendor-style read table and independent dosages for a polyploid at low depth,
+so polyploids with known dosages were made from the smelt reads, as Cooke et
+al. (2022, Genome Research 32:766) made synthetic polyploids from human
+samples: the 96 diploids were divided at random into groups of two
+(tetraploids, 48 samples) or three (hexaploids, 32), at each marker every
+member gave the same number of reads, drawn without replacement, and the
+group's true dosage at a SNP is the sum of its members' alignment-based
+genotypes, known where every member's genotype rests on 10 or more reads.
+The pooled reads were also thinned to a mean of 50, 25 and 10 per sample and
+marker (524 for tetraploids and 744 for hexaploids before thinning). The reads are real, with their real
+scatter and without allelic bias beyond what diploid reads have; the
+genotype frequencies are those of pooled individuals, not of a polyploid
+population. Share of genotypes with reads called correctly, targets and
+off-target SNPs, without filters; means over three random groupings for the
+tetraploids and two for the hexaploids, which differ from one another by 0.9
+points at most for `call` without the bias and 1.9 for the other columns
+(updog was run on the first grouping only):
+
+| Ploidy, mean depth | `call --prior hwe` | `call --prior norm` | `call --prior hwe --allele-bias fit` | `call` with polyRAD's settings | polyRAD `IterateHWE`, overdispersion 9 | polyRAD at the overdispersion `call` estimated | updog `norm` |
+|---|---|---|---|---|---|---|---|
+| 4x, all reads | 98.3%, 98.9% | 98.3%, 98.9% | 97.9%, 98.3% | 93.1%, 94.6% | 93.1%, 94.6% | did not finish | 98.2%, 98.5% |
+| 4x, 50 | 90.4%, 95.3% | 90.4%, 95.2% | 89.5%, 94.9% | 85.2%, 90.7% | 85.0%, 90.7% | 90.1%, 95.2% | 89.1%, 94.9% |
+| 4x, 25 | 83.2%, 92.0% | 82.9%, 91.9% | 81.7%, 91.4% | 79.8%, 89.2% | 79.4%, 89.1% | 82.8%, 91.8% | 80.9%, 91.0% |
+| 4x, 10 | 70.4%, 85.1% | 69.9%, 84.8% | 68.3%, 84.5% | 69.0%, 84.3% | 68.6%, 84.2% | 69.9%, 85.0% | 66.4%, 83.9% |
+| 6x, all reads | 97.0%, 98.1% | 96.9%, 98.0% | 96.0%, 96.7% | 71.4%, 80.1% | 71.4%, 80.1% | did not finish | 96.9%, 97.5% |
+| 6x, 50 | 77.8%, 89.0% | 77.4%, 88.8% | 70.8%, 86.4% | 65.7%, 82.1% | 65.3%, 82.0% | 77.5%, 88.7% | 68.0%, 84.9% |
+| 6x, 25 | 67.1%, 83.1% | 66.6%, 82.8% | 59.6%, 80.5% | 59.8%, 79.5% | 59.3%, 79.3% | 66.6%, 82.7% | 57.1%, 79.1% |
+| 6x, 10 | 53.7%, 74.1% | 52.0%, 73.6% | 48.6%, 72.2% | 50.4%, 72.9% | 49.5%, 72.7% | 52.8%, 73.9% | 47.2%, 70.8% |
+
+- `call` estimated an overdispersion of 500, the highest value it tries, in
+  all but two tables (150 for tetraploids at 10 reads in two groupings): pooled
+  reads of well-behaved diploid markers scatter little. With that value in
+  place of polyRAD's 9, 5 points more tetraploid and 12 to 26 points more
+  hexaploid target genotypes are right at 50 reads and above.
+- polyRAD given the same overdispersion is 0.3 to 0.9 points below `call`
+  with the HWE prior, which also has a background rate. At full depth its
+  iteration did not end in 300 s at an overdispersion of 500, in any
+  grouping.
+- updog, which fits a bias and an overdispersion for every SNP, equals `call`
+  at full depth and is 1 to 4 points behind it for tetraploids and 6 to 10
+  for hexaploids once the reads are thinned. `call` with the bias fitted
+  loses the same way, up to 7.6 points for hexaploids at 25 reads: on reads
+  without bias, a parameter per SNP is fitted to noise.
+- With the default filters 95.7 to 98.9% of the tetraploid target genotypes
+  kept are right, with 98%, 74%, 52% and 20% of them kept from full depth
+  down to 10 reads; for hexaploids 93.3 to 98.5%, with 96%, 41%, 17% and 4%
+  kept.
+- Off-target SNPs are called better than targets in every row; the targets
+  are the most polymorphic SNP of each tag, so more of their genotypes are
+  heterozygous.
+
 **Audit against both packages' sources.** Every function of `madcats_call.py`
 was read against polyRAD 2.0.1's and updog 2.1.7's source and run against the
 packages on the same inputs, to settle what is adopted, what is adapted and

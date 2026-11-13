@@ -24,6 +24,11 @@ several:
 | `all` | `PREFIX.all.vcf` | variant | The target records, plus one record for every other tag position where a row with reads shows a base substitution |
 | `haplotype` | `PREFIX.haplotypes.vcf` | marker | Whole tag sequences (microhaplotypes): the Ref tag, then every other sequence with reads |
 
+The RefMatch and AltMatch rows are part of a target genotype's evidence. On a potato vendor MADC
+of diploid and tetraploid samples, target genotypes from every row had the dosage of a SNP array
+for 89.1% of 202,143 genotypes; from the exact Ref and Alt rows alone, 82.1%, with 2% of the
+genotypes left without reads.
+
 Coordinates are **marker-local**. `CHROM` is the marker (its CloneID) and `POS` is a 1-based
 position on its Ref tag, so these files are not placed on a genome. Every marker is declared as a
 contig in the header, and a `##madcatsCoordinates` line says so.
@@ -301,7 +306,12 @@ are in the development record):
   the alfalfa populations it raised agreement with published dosages from 90% to 92%.
 - Against the potato array genotypes, which do not come from a read-count caller, it raised the
   share of matching dosages from 92.3% to 96.6%, where updog reached 96.7%. At the markers updog
-  found biased the share rose from 80% to 95%.
+  found biased the share rose from 80% to 95%. On the whole deposit of that study (703 clones,
+  1,862 markers, none selected) the share rose from 82.8% to 87.5%, where the study's own updog
+  genotypes have 87.2%; and on the study's vendor MADC of diploid and tetraploid samples from
+  89.1% to 91.9%, where the study's genotypes have 91.8%.
+- On real diploid reads (96 delta smelt) it lowered agreement with alignment-based genotypes by
+  0.15 points at targets and 0.3 at off-target SNPs.
 - On outbred tetraploid data without bias it cost up to 1.5 points.
 - Do not fit it for inbred lines. Without heterozygous samples a bias cannot be told from a shift
   of every dosage, and 8 points were lost.

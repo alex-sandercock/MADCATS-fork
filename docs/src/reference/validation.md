@@ -107,6 +107,44 @@ Across 127,667 emitted rows in six MADCs spanning five platforms, zero rows cont
 adapter at a strict 13-mer probe. Trimming adapters before a run changed dosage concordance by 0.05
 points on the capture benchmark while costing 2 points of extraction.
 
+## Genotype Calling (`call`)
+
+`call` adapts polyRAD's model and parts of updog's, so it was checked against both packages and
+against data with known or independent genotypes. The tables are in the development record.
+
+- **Same answers as polyRAD.** With polyRAD's settings `call` gives polyRAD's genotypes: on three
+  alfalfa MADCs all but 0.01% of 6.8 million target genotype values are identical, and on the polyRAD
+  paper's own benchmark (five diversity panels) the error of `call --prior hwe` equals the
+  published error of polyRAD's HWE model to the third decimal.
+- **Potato against a SNP array.** On the deposit of Endelman et al. (2024), the study's stored
+  genotypes scored here reproduce the paper's own per-marker error table. With the bias fitted,
+  `call` has the array's dosage for 87.5% of 550,052 genotypes of 298 tetraploid clones, where the
+  study's updog genotypes have 87.2%; without it 82.8%, level with polyRAD at the same
+  overdispersion and 5 points above polyRAD's defaults.
+- **A vendor MADC of mixed ploidy.** The same study's DArT MADC (375 samples, 52 of them diploid)
+  was called as delivered: 91.9% of 202,143 genotypes have the array's dosage with the bias
+  fitted (the study's genotypes: 91.8%) and 89.1% without.
+- **Real diploid reads.** On 96 delta smelt (GT-seq), 99.6% of target genotypes and 99.8% of
+  off-target genotypes that pass the default filters agree with genotypes called from alignments
+  of the same reads; polyRAD and updog on the same counts agree less often.
+- **Polyploids with known dosages from real reads.** Tetraploids and hexaploids pooled from the
+  smelt diploids, at full depth and thinned to 50, 25 and 10 reads: `call` is level with updog at
+  full depth (98.3% of tetraploid and 97.0% of hexaploid target genotypes right) and ahead of it
+  once reads are thinned, by 1 to 4 points for tetraploids and 6 to 10 for hexaploids.
+- **Hexaploid replicates.** On ten samples of each of eight sweetpotato clones, with the read
+  counts the study's updog run used, two samples of a clone get the same dosage in 86.7% of
+  pairs with `call` (norm prior, bias fitted) and 87.3% with updog.
+- **Simulated tables with known dosages**, from updog's and polyRAD's own simulators: diploid,
+  tetraploid and hexaploid, populations, groups and families, 8 to 150 reads, with and without
+  allelic bias.
+
+Limits found: markers on one subgenome of an allopolyploid are outside the model; linkage between
+markers is not used, and polyRAD's models that use it are better on mapping populations; fitting
+the allelic bias helps where one allele gives fewer reads (potato) and costs accuracy where it does
+not, so it is off by default.
+
+See [`call`](../commands/call.md).
+
 ## Genome Paralog Filter (`filter-paralogs`)
 
 - **Lettuce 3K DArTag** (the panel the filter was built on): the rows kept or dropped agreed with a
