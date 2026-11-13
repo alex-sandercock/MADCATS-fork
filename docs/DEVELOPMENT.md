@@ -2021,6 +2021,7 @@ one core.
 |---|---|---|---|---|
 | polyRAD 2.0.1, `IterateHWE` | 1 | 5 s | 5 s | 284 MB |
 | `call` with polyRAD's settings (nothing estimated) | 1 | 7 s | 7 s | 57 MB |
+| `call` with polyRAD's settings | 4 | 2 s | 7 s | 107 MB |
 | `call --prior hwe` (the defaults) | 1 | 33 s | 33 s | 57 MB |
 | `call --prior hwe` | 4 | 10 s | 34 s | 161 MB |
 | `call --prior norm` | 1 | 38 s | 38 s | 57 MB |
@@ -2031,17 +2032,30 @@ one core.
 | updog 2.1.7, `norm` | 1 | 1,115 s | 1,108 s | 281 MB |
 | updog 2.1.7, `norm` | 4 | 325 s | 1,128 s | 765 MB |
 
-- With polyRAD's settings `call` takes 7 s where polyRAD takes 5 s, in a fifth
-  of the memory. Most of the other 26 s of a default run is the estimate of
-  the overdispersion and the background-read rate, which works on at most
-  20,000 sample-by-marker cells however large the table is.
-- The `norm` prior adds 5 s to the `hwe` run.
-- Fitting the bias multiplies the time by eight. It is still 3.7 times as fast
-  as updog on one core and 4 times on four, with the accuracy shown above.
-- Without the bias, `call --prior norm` is 29 times as fast as updog on one
-  core and 32 times on four.
-- Four workers give 3.5 to 3.8 times the speed of one. Memory with four
-  workers is that of five Python processes, 160–180 MB.
+The estimate of the overdispersion and the background-read rate is a fixed
+cost, because it works on at most 20,000 sample-by-marker cells however large
+the table is (107 of the 1,000 markers here). The same runs on one core with
+the two values given as numbers, so that nothing is estimated:
+
+| Settings, values given | Wall | Share of the full run |
+|---|---|---|
+| `--prior hwe` | 6 s | 6 of 33 s |
+| `--prior norm` | 10 s | 10 of 38 s |
+| `--prior norm --allele-bias fit` | 97 s | 97 of 301 s |
+
+- With polyRAD's settings `call` takes 7 s on one core where polyRAD takes
+  5 s, in a fifth of the memory, and 2 s on four cores.
+- A default run spends 27 of its 33 s on the estimate. Calling alone takes 6 s
+  with `hwe` and 10 s with `norm`.
+- With the bias fitted the estimate takes about 200 s, since the bias of every
+  sampled marker is fitted again for each pair of values tried. Calling with
+  the bias takes 97 s, ten times as long as without.
+- The whole run with the bias is 3.7 times as fast as updog on one core and 4
+  times on four, with the accuracy shown above. Without the bias,
+  `call --prior norm` is 29 times as fast as updog on one core and 32 times on
+  four.
+- Four workers give 3.2 to 3.8 times the speed of one. Memory with four
+  workers is that of five Python processes, 110–180 MB.
 
 **Other checks.** On the bundled example all 96 target and 96 haplotype
 genotypes equal the simulated truth. `bcftools view` reads the three VCF types

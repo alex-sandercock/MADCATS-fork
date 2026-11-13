@@ -214,9 +214,12 @@ towards 0 with a normal prior of standard deviation 0.7, starts from updog's fiv
 (0.37 to 2.7) and keeps the fit with the highest log-likelihood after that prior. With the other
 settings equal, the fitted bias and the genotypes match updog's.
 
-- The bias is found by calling the record at a series of bias values, 17 or more, so calling takes
-  much longer. On 1,000 alfalfa markers and 186 samples a whole run took eight times as long (301 s
-  against 38 s on one worker), which was still 3.7 times as fast as updog.
+- The bias is found by calling the record at a series of bias values, 17 or more. On 1,000 alfalfa
+  markers and 186 samples, calling took ten times as long on one worker (97 s against 10 s), and
+  the estimate of the overdispersion and background rate, which fits the bias for every pair of
+  values it tries, about 200 s against 28 s. The whole run, 301 s, was still 3.7 times as fast as
+  updog. The estimate does not grow with the table, and giving `--overdispersion` and
+  `--background-rate` as numbers skips it.
 - It is applied to the sample's own allele copies, and background reads are added afterwards.
   updog applies its sequencing error first. In this order, samples that do not carry an allele say
   nothing about its bias, which matters because the background rate is one value for the table.
