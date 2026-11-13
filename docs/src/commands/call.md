@@ -178,8 +178,11 @@ them.
   Hardy-Weinberg proportions it was badly off for samples from two subpopulations, and with those
   or the `norm` shape, neither of which can describe an excess of homozygotes, it failed for
   inbred samples.
-- In simulations with 20 or more reads per sample both values were recovered. With 6 to 25 reads
-  per sample they were within a factor of about two.
+- In simulated diploids and tetraploids with 20 or more reads per sample both values were
+  recovered (31 of 32 tables). In hexaploids the overdispersion was recovered in 12 of 16 tables
+  and read between 14 and 50 for a simulated 40 in the rest. With 6 to 25 reads per sample the
+  background rate was still recovered, an overdispersion of 40 read as 30 to 75, and one of 150
+  as anything from 100 to 500: scatter that small cannot be measured at that depth.
 - A table with no heterozygous samples and no stray reads has no scatter to measure: the
   overdispersion estimate ends at the lowest value tried, and `call` warns and uses 9. Inbred
   lines whose reads do include stray reads of the other allele can be estimated from those.

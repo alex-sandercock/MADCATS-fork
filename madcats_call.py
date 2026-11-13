@@ -1407,9 +1407,11 @@ def estimate_read_model(
     The two parameters can be told apart because they act on different
     samples: reads of an allele in samples that do not carry it show the
     background rate, and the spread of read fractions among samples that
-    carry both alleles shows the overdispersion.  In simulations with 20 or
-    more reads per sample both were recovered; with 6 to 25 reads the
-    estimates were within a factor of about two (see docs/DEVELOPMENT.md).
+    carry both alleles shows the overdispersion.  In simulated diploids and
+    tetraploids with 20 or more reads per sample both were recovered; with 6
+    to 25 reads the rate was still recovered, and the overdispersion was
+    within a factor of two of a simulated 40 and unmeasurable at 150 (see
+    docs/DEVELOPMENT.md).
     """
     rates = sorted(background_rates)
     tried: Dict[float, OverdispersionEstimate] = {}

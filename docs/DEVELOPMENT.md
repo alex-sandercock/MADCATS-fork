@@ -1815,6 +1815,29 @@ raises the likelihood. The two can be told apart because they show in
 different samples: stray reads in samples that do not carry an allele, scatter
 in samples that carry both.
 
+Eighty simulated tables of 50 markers and 120 samples were estimated: random
+mating, one F1 family, two subpopulations and inbred lines, each with a
+background rate of 0.001, 0.003 and 0.01 at an overdispersion of 40, and with
+0.003 at 150. Estimates of the overdispersion, and the number of tables whose
+background rate was the simulated one:
+
+| Samples | Reads per sample | Simulated 40 (12 tables) | Simulated 150 (4 tables) | Background rate |
+|---|---|---|---|---|
+| 4x | 20–120 | 40 in all 12 | 150 in all 4 | 16 of 16 |
+| 2x | 20–120 | 40 in all 12 | 150 in 3, 200 in 1 | 16 of 16 |
+| 6x | 30–150 | 40 in 8; 14–50 | 150 in all 4 | 15 of 16 |
+| 4x | 6–25 | 40 in 6; 30–75 | 150 in 2; 100–500 | 15 of 16 |
+| 2x | 6–25 | 40 in 10; 30–50 | 100–300 | 16 of 16 |
+
+The background rate is the simulated one in 78 of the 80 tables and one grid
+step away in the other two. The overdispersion is the simulated one in 31 of
+the 32 diploid and tetraploid tables with 20 or more reads. The two
+hexaploid estimates furthest out (14 and 25) are at a background rate of 1%.
+With 6 to 25 reads an overdispersion of 150 cannot be measured: at that depth
+scatter that small is hidden by the sampling of reads, and for the same
+reason it changes the calls little. Inbred lines are estimable here because
+their homozygotes carry stray reads.
+
 On the alfalfa populations the estimate is a background rate of 0.003 with an
 overdispersion of 30 (I195 × J432) and 40 (E115 × F628). With the bias fitted
 it is 0.0005 with 150, and 0.001 with 150, nearer updog's per-marker medians
