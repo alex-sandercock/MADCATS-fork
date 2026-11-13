@@ -862,15 +862,18 @@ def _marker_pass(
     priors: Dict[int, List[List[float]]],
     settings: ModelSettings,
     biases: Sequence[float],
+    log_likelihoods: Optional[List[List[List[float]]]] = None,
 ) -> Tuple[List[List[List[float]]], List[List[List[float]]]]:
     """Likelihoods and posteriors of every sample and allele for given allele frequencies and priors.
 
     The arguments are those of ``_log_likelihoods_of_samples``, with the
-    priors as ``[ploidy][allele][dosage]``.
+    priors as ``[ploidy][allele][dosage]``.  ``log_likelihoods`` can be given
+    when they are already known for these frequencies.
     """
-    log_likelihoods = _log_likelihoods_of_samples(
-        depths, marker_depths, count_constants, ploidies, allele_frequencies, settings, biases
-    )
+    if log_likelihoods is None:
+        log_likelihoods = _log_likelihoods_of_samples(
+            depths, marker_depths, count_constants, ploidies, allele_frequencies, settings, biases
+        )
     # Samples of the same ploidy share the prior's logs.
     log_priors = {ploidy: [log_probabilities(prior) for prior in priors[ploidy]] for ploidy in priors}
     posteriors = [
@@ -927,8 +930,19 @@ def _iterate_marker(
         priors = warm_start.priors
         normal_parameters = warm_start.normal_prior_parameters
 
+    # Only the contamination term makes the likelihood depend on the allele frequencies.
+    # Without it the likelihoods are the same in every pass and are computed once.
+    unchanging_log_likelihoods = None
+    if settings.contamination_rate == 0:
+        unchanging_log_likelihoods = _log_likelihoods_of_samples(
+            depths, marker_depths, count_constants, ploidies, frequencies, settings, biases
+        )
+
     def one_pass():
-        return _marker_pass(depths, marker_depths, count_constants, ploidies, frequencies, priors, settings, biases)
+        return _marker_pass(
+            depths, marker_depths, count_constants, ploidies, frequencies, priors, settings, biases,
+            unchanging_log_likelihoods,
+        )
 
     if settings.prior == PRIOR_UNIFORM:
         log_likelihoods, posteriors = one_pass()
@@ -1436,18 +1450,23 @@ def marker_overdispersion_log_likelihoods(
     frequency = frequency_for_likelihood(result.allele_frequencies[1], len(depths))
     bias = result.allele_biases[1]
     log_priors = {ploidy: log_probabilities(prior[1]) for ploidy, prior in result.priors.items()}
+    # The samples with reads, each with the term of count_constant that no overdispersion changes.
+    samples_with_reads = [
+        (alternate_depth, reference_depth + alternate_depth,
+         log_binomial_coefficient(reference_depth + alternate_depth, alternate_depth), ploidy)
+        for (reference_depth, alternate_depth), ploidy in zip(depths, ploidies)
+        if reference_depth + alternate_depth > 0
+    ]
     totals = []
     for value in grid:
         at_value = dataclasses.replace(settings, overdispersion=value)
         shapes = {ploidy: dosage_shapes(ploidy, frequency, at_value, bias) for ploidy in log_priors}
+        log_gamma_of_value = math.lgamma(value)
         total = 0.0
-        for (reference_depth, alternate_depth), ploidy in zip(depths, ploidies):
-            marker_depth = reference_depth + alternate_depth
-            if marker_depth == 0:
-                continue
-            log_likelihoods = log_likelihoods_for_counts(
-                alternate_depth, marker_depth, count_constant(alternate_depth, marker_depth, value), shapes[ploidy]
-            )
+        for alternate_depth, marker_depth, log_coefficient, ploidy in samples_with_reads:
+            # count_constant, with its terms in the same order.
+            constant = log_coefficient + log_gamma_of_value - math.lgamma(marker_depth + value)
+            log_likelihoods = log_likelihoods_for_counts(alternate_depth, marker_depth, constant, shapes[ploidy])
             sample_total = log_sum_of_exponentials(
                 [log_likelihood + log_prior for log_likelihood, log_prior in zip(log_likelihoods, log_priors[ploidy])]
             )
@@ -1462,6 +1481,24 @@ def _evenly_spaced(items: Sequence, limit: int) -> List:
     if len(items) <= limit:
         return list(items)
     return [items[index * len(items) // limit] for index in range(limit)]
+
+
+def _markers_for_estimate(
+    depths_by_marker: Sequence[Sequence[Sequence[int]]], sample_count: int
+) -> Tuple[List[Sequence[Sequence[int]]], int]:
+    """The markers the read-model estimate works on, and how many of their sample cells have reads.
+
+    Markers without reads are left out, and at most enough markers to make up
+    ``OVERDISPERSION_MAX_CELLS`` cells are kept, at even spacing.  Selecting
+    from an earlier selection returns it unchanged.
+    """
+    samples_with_reads = [
+        sum(1 for sample_depths in depths if sum(sample_depths) > 0) for depths in depths_by_marker
+    ]
+    usable = [(depths, count) for depths, count in zip(depths_by_marker, samples_with_reads) if count > 0]
+    marker_limit = max(OVERDISPERSION_MIN_MARKERS, OVERDISPERSION_MAX_CELLS // max(1, sample_count))
+    chosen_markers = _evenly_spaced(usable, marker_limit)
+    return [depths for depths, _ in chosen_markers], sum(count for _, count in chosen_markers)
 
 
 def estimate_overdispersion(
@@ -1494,16 +1531,9 @@ def estimate_overdispersion(
     rough estimate assigns the wrong dosage often enough that the counts look
     more scattered than they are (see docs/DEVELOPMENT.md).
     """
-    samples_with_reads = [
-        sum(1 for sample_depths in depths if sum(sample_depths) > 0) for depths in depths_by_marker
-    ]
-    usable = [(depths, count) for depths, count in zip(depths_by_marker, samples_with_reads) if count > 0]
-    marker_limit = max(OVERDISPERSION_MIN_MARKERS, OVERDISPERSION_MAX_CELLS // max(1, len(ploidies)))
-    chosen_markers = _evenly_spaced(usable, marker_limit)
-    cells_with_reads = sum(count for _, count in chosen_markers)
+    markers, cells_with_reads = _markers_for_estimate(depths_by_marker, len(ploidies))
     if cells_with_reads < OVERDISPERSION_MIN_CELLS:
-        return OverdispersionEstimate(None, {}, len(chosen_markers), [], cells_with_reads=cells_with_reads)
-    markers = [depths for depths, _ in chosen_markers]
+        return OverdispersionEstimate(None, {}, len(markers), [], cells_with_reads=cells_with_reads)
 
     current = start
     values_by_round: List[float] = []
@@ -1577,6 +1607,8 @@ def estimate_read_model(
     """
     rates = sorted(background_rates)
     tried: Dict[float, OverdispersionEstimate] = {}
+    # Every rate is judged on the same markers, selected once.
+    depths_by_marker, _ = _markers_for_estimate(depths_by_marker, len(ploidies))
 
     def log_likelihood_at(index: int) -> float:
         rate = rates[index]
@@ -1698,6 +1730,8 @@ def _neighbour_candidates(
     prior uses: the neighbours' mean with the marker's mean counted as
     ``NEIGHBOUR_TABLE_WEIGHT`` more of them.
     """
+    # The rows arrive as compact arrays; products of plain lists are about twice as fast.
+    shares_by_half = [[list(row) for row in half] for half in shares_by_half]
     sample_count = len(shares_by_half[0])
     limit = max(counts)
     squared_lengths = [[_sum_of_products(row, row) for row in half] for half in shares_by_half]
@@ -2666,7 +2700,7 @@ def target_depths_by_marker(tasks: Sequence[MarkerTask], sample_count: int) -> L
 
 
 def choose_read_model(
-    tasks: Sequence[MarkerTask],
+    depths_by_marker: Sequence[Sequence[Sequence[int]]],
     ploidies: Sequence[int],
     settings: ModelSettings,
     overdispersion,
@@ -2678,7 +2712,7 @@ def choose_read_model(
     ``overdispersion`` and ``background_rate`` are numbers or ``auto``.
     Returns the two values to use and a report on each for the QC JSON.
     Whatever is ``auto`` is estimated from each marker's reference-type and
-    alternate-type read counts (``estimate_read_model``).
+    alternate-type read counts, ``depths_by_marker`` (``estimate_read_model``).
 
     The estimate is made with the free-weights prior whatever prior the run
     uses, because the estimate is only as good as the genotype proportions
@@ -2698,7 +2732,7 @@ def choose_read_model(
         return overdispersion, background_rate, overdispersion_report, background_report
 
     estimate = estimate_read_model(
-        target_depths_by_marker(tasks, len(ploidies)),
+        depths_by_marker,
         ploidies,
         dataclasses.replace(settings, prior=PRIOR_FREE, selfing_rate=0.0),
         BACKGROUND_RATE_GRID if background_rate == AUTO else (background_rate,),
@@ -2851,15 +2885,16 @@ def run_call(args: argparse.Namespace) -> int:
         return list(executor.map(function, items, chunksize=max(1, len(items) // (args.jobs * 8))))
 
     try:
+        # The read-model estimate and the search for like samples both work on these counts.
+        needs_target_depths = AUTO in (args.overdispersion, args.background_rate) or args.prior == PRIOR_STRUCTURE
+        target_depths = target_depths_by_marker(tasks, len(ploidies)) if needs_target_depths else []
         overdispersion, background_rate, overdispersion_report, background_report = choose_read_model(
-            tasks, ploidies, model, args.overdispersion, args.background_rate, map_over_markers
+            target_depths, ploidies, model, args.overdispersion, args.background_rate, map_over_markers
         )
         settings = dataclasses.replace(model, overdispersion=overdispersion, background_rate=background_rate)
         structure_report: Dict[str, object] = {}
         if args.prior == PRIOR_STRUCTURE:
-            choice = find_neighbours(
-                target_depths_by_marker(tasks, len(ploidies)), ploidies, settings, map_over_markers
-            )
+            choice = find_neighbours(target_depths, ploidies, settings, map_over_markers)
             settings = dataclasses.replace(settings, neighbours=choice.neighbours)
             structure_report = {
                 "neighbours_per_sample": choice.count,
@@ -2880,6 +2915,7 @@ def run_call(args: argparse.Namespace) -> int:
                     f"note: --prior structure uses Hardy-Weinberg proportions for the whole table: {choice.reason}",
                     file=sys.stderr,
                 )
+        del target_depths
         options = CallOptions(
             settings=settings,
             vcf_types=vcf_types,
