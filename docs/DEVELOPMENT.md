@@ -2451,6 +2451,87 @@ With the Ref and Alt rows alone 7 points fewer genotypes have the array's
 dosage, and 2.1% of the genotypes have no reads at all. The reads on the
 other rows are reads of the target's alleles.
 
+**Which thresholds on the VCF remove the worst markers.** The two potato
+panels have array dosages for every marker and were not selected for good
+behaviour, so they show which statistics of a `call` VCF pick out the markers
+that disagree with the array. Both were called with `--prior hwe --allele-bias
+fit` and without filters, so that every genotype has its GQ. A marker is
+"bad" when fewer than 80% of its genotypes have the array's dosage: 324 of
+1,862 on the first panel and 229 of 2,602 on the second.
+
+For a genotype, on the first panel (550,052 genotypes) and the second
+(202,143): share with the array's dosage among those kept, and share kept.
+
+| Genotype kept when | First panel | Second panel |
+|---|---|---|
+| Any GQ | 87.5%, all | 91.9%, all |
+| GQ 10 or more | 90.8% of 90.3% | 93.2% of 96.2% |
+| GQ 20 or more | 92.4% of 80.4% | 93.9% of 91.1% |
+| GQ 30 or more | 93.1% of 70.3% | 94.2% of 84.6% |
+| GQ 40 or more | 93.4% of 59.4% | 94.3% of 76.4% |
+| GQ 10 or more and depth 10 or more (the defaults) | 91.3% of 89.4% | 93.3% of 96% |
+
+For a marker, how well each statistic separates the bad markers from the
+others (the probability that a bad marker ranks worse than a good one; 0.5 is
+chance), with every sample of the VCF used and no truth:
+
+| Statistic | First panel | Second panel |
+|---|---|---|
+| Share of samples that pass the default filters (call rate) | 0.86 | 0.83 |
+| Mean depth | 0.78 | 0.66 |
+| Estimated share miscalled (1 minus the mean posterior of the called genotype) | 0.77 | 0.77 |
+| Fewer heterozygous calls than random mating gives at the marker's allele frequency | 0.76 | 0.59 |
+| Mean GQ | 0.73 | 0.69 |
+| `BIAS`, as distance from 1 | 0.69 | 0.67 |
+| Minor allele frequency | 0.56 | 0.46 |
+
+Filters, as markers removed, share of the removed that are bad, share of the
+bad markers removed, and the agreement of the genotypes that pass the default
+filters at the markers left (91.3% and 93.3% with no marker filter):
+
+| Marker removed when | First panel | Second panel |
+|---|---|---|
+| Call rate under 0.8 | 284; 64%; 56%; 92.8% | 205; 36%; 32%; 94.0% |
+| Call rate under 0.9 | 555; 45%; 77%; 94.1% | 530; 28%; 65%; 95.0% |
+| `BIAS` outside 0.5 to 2 | 162; 62%; 31%; 92.8% | 179; 32%; 25%; 93.9% |
+| `BIAS` outside 0.33 to 3 | 94; 73%; 21%; 92.5% | 69; 42%; 13%; 93.6% |
+| Estimated share miscalled over 0.15 | 90; 88%; 24%; 91.5% | 33; 70%; 10%; 93.4% |
+| Heterozygous calls 0.2 under expectation | 25; 92%; 7%; 91.8% | 20; 95%; 8%; 93.6% |
+| Mean depth under 30 | 120; 79%; 29%; 91.7% | 63; 51%; 14%; 93.4% |
+| Call rate under 0.8, or `BIAS` outside 0.5 to 2 | 369; 58%; 66%; 93.6% | 333; 31%; 45%; 94.4% |
+
+- GQ sorts genotypes as far as 20; beyond that the genotypes lost are mostly
+  right ones. A genotype with a GQ of 30 or more is wrong 6 to 7 times in 100
+  here, where its posterior says once in 1,000: the errors left are at
+  markers where the model is confident and the array differs, which a
+  genotype threshold cannot reach.
+- The call rate under the default filters is the best single marker
+  statistic on both panels. At an equal number of markers removed, the lowest
+  call rates take out more bad markers than the most extreme biases, the
+  highest miscall estimates or the lowest depths (of 200 removed on the first
+  panel: 146, 111, 133 and 125 bad).
+- `BIAS` is worth less as a filter than its use in updog suggests. A marker
+  with a strong bias is called right once the bias is fitted, so the range
+  0.5 to 2 removes 62 good markers of 162 on the first panel and 121 of 179
+  on the second. Added to a call-rate filter it gains 0.2 to 0.3 points on
+  the first panel over removing the same number by call rate alone, and
+  nothing on the second.
+- Two statistics remove few markers and almost only bad ones: a deficit of
+  heterozygous calls of 0.2, which is what a null allele gives, and a miscall
+  estimate over 0.15.
+- Without the bias fitted the GQs of a biased panel are lower and a call-rate
+  threshold removes far more: under 0.8, 454 markers on the first panel and
+  1,125 on the second. The thresholds above belong to a run with the bias.
+- On the delta smelt panel, which has no such markers, the same rules remove
+  little: 16 or 17 of 983 records have a call rate under 0.8, and 37 of 946 a
+  bias outside 0.5 to 2 (16 outside 0.33 to 3).
+- No filter finds every bad marker, and the worst are not a calling problem.
+  Of the 132 and 84 markers with under half their genotypes right, the
+  called dosage follows the array's closely (correlation 0.9 or more) at 5
+  and 2; at the others the two assays measure something different. The
+  strictest filter in the table, a call rate under 0.9, still leaves 30% and
+  38% of them.
+
 **Hexaploid sweetpotato: replicates of eight clones.** The deposit of a study
 of DNA from sweetpotato leaves and roots (Zenodo record 22288064, CC-BY) has
 a vendor MADC of 80 samples, ten of each of eight clones, and the study's
