@@ -2494,6 +2494,47 @@ for `call`. What the table shows:
   polyRAD hexaploid: 10 with a background rate of 0.0002, where 20 and 0.001
   were simulated and the estimate without bias gave 20 and 0.001.
 
+**Other seeds, and samples of mixed ploidy.** The tables above are one draw
+each. Fifteen scenarios of the same two simulators were drawn again with
+other seeds (150 samples, 150 markers) and called by `call`, polyRAD and, for
+the first seed, updog. Two seeds finished all fifteen tables and two more
+finished part of them before the runs reached their time limit, so each
+scenario has two to four draws.
+
+Three of the scenarios have diploid, tetraploid and hexaploid samples in one
+table, which the tables above did not test (polyRAD's simulator,
+overdispersion 20). Share of dosages right, in all and by ploidy, as means
+over the draws:
+
+| Scenario | `call` hwe: all, 2x, 4x, 6x | `call` structure | polyRAD `IterateHWE`, overdispersion 20 | polyRAD `IteratePopStruct`, overdispersion 20 |
+|---|---|---|---|---|
+| One population, 25 reads | 85.6%, 99.1%, 82.1%, 65.5% | 85.6%, 99.1%, 82.1%, 65.5% | 85.5%, 99.0%, 82.1%, 65.5% | 84.3%, 99.0%, 80.5%, 62.5% |
+| Three groups, 25 reads | 86.8%, 99.2%, 83.9%, 67.7% | 87.9%, 99.3%, 85.2%, 70.8% | 86.7%, 99.1%, 83.8%, 67.7% | 87.5%, 99.1%, 84.6%, 70.3% |
+| Three groups, 8 reads | 79.2%, 95.6%, 73.7%, 57.6% | 81.1%, 95.9%, 76.1%, 61.3% | 79.0%, 95.5%, 73.4%, 57.3% | 80.5%, 95.5%, 75.4%, 60.4% |
+
+- With samples of three ploidies in one table `call` with the HWE prior has
+  polyRAD's shares at the same overdispersion, to 0.3 points for every
+  ploidy, and `structure` is 0.4 to 0.6 points above polyRAD's
+  population-structure model where there are groups. With one population
+  `structure` equals `hwe` and polyRAD's structure model loses 1.2 points,
+  3 for the hexaploids.
+- The other twelve scenarios repeat the comparison above, and the draws agree
+  with it. Without bias in the data `call` is level with updog on updog's
+  tetraploids (97.0% against 96.9%) and ahead on polyRAD's low-depth
+  tetraploids (82.4% against 78.7%) and hexaploids (73.7% against 63.1%).
+  With bias in the data, `--prior norm --allele-bias fit` has 96.5% against
+  updog's 96.7% on biased tetraploids, 84.9% against 84.0% on hexaploids and
+  92.1% against 90.6% on the F1 table, and is 1.1 points behind at low depth
+  (84.7% against 85.8%).
+- Draws of one scenario differ by 1.5 points at most for `call` on the
+  tables without bias, and by up to 3 where a bias in the data is left
+  unfitted. The F1 table is apart: the parents' genotypes are drawn anew, and
+  `--prior hwe` ranges from 75.2% to 82.7% where `--prior norm --allele-bias
+  fit` ranges from 91.0% to 93.6%.
+- The overdispersion estimate was the simulated 20 on polyRAD's tables in
+  most draws (18 or 25 in the others), and 30 or 40 on the mixed-ploidy table
+  at 8 reads.
+
 **Time and memory.** One table was called by all three tools: the first 1,000
 markers of I195 × J432 (186 tetraploid samples, 2,486 MADC rows), target
 records, default filters, on a four-core Intel Xeon at 2.1 GHz with 15 GB of
@@ -2836,14 +2877,16 @@ brackets, and its agreement is among those:
 | I195 × J432 | 25 | 84.53% | 84.08% | 85.77% | 84.44% | 85.12% (90.0%) | 86.26% | 86.61% |
 | I195 × J432 | 10 | 75.72% | 76.04% | 76.03% | 75.52% | 77.02% (87.5%) | 75.87% | 75.56% |
 | E115 × F628 | 424 | 90.04% | 89.80% | 92.00% | 89.93% | 90.42% (93.7%) | 92.68% | 93.06% |
+| E115 × F628 | 25 | 82.23% | 82.25% | 84.36% | 81.81% | 83.23% (90.9%) | 84.53% | 84.39% |
 
-E115 × F628 at 25 and 10 reads was not run: the job reached its time limit
-after the four rows above. updog's `f1` model is 0.3 to 0.4 points above its
-`norm` at full depth and at 25 reads, and 0.3 below at 10. polyRAD's mapping
-prior is 0.05 to 1.5 points above its `IterateHWE` on the genotypes it calls
-and leaves 6 to 13% uncalled. `call` with `norm` and the bias is 0.5 to 0.7
-points below updog's `norm` at full depth and at 25 reads and level with it at
-10. The truth here favours updog, whose calls it is.
+E115 × F628 at 10 reads is missing: the run reached its time limit twice
+before that row. updog's `f1` model is 0.3 to 0.4 points above its `norm` at
+full depth and, in the first family, at 25 reads; in the second it is 0.1
+below at 25 reads, and in the first 0.3 below at 10. polyRAD's mapping prior
+is 0.05 to 1.5 points above its `IterateHWE` on the genotypes it calls and
+leaves 6 to 13% uncalled. `call` with `norm` and the bias is 0.2 to 0.7 points
+below updog's `norm` at full depth and at 25 reads and level with it at 10.
+The truth here favours updog, whose calls it is.
 
 **Priors on haplotype records.** Neither polyRAD's paper nor its package
 gives accuracy figures for multi-allele (haplotype) calls: the paper scores
