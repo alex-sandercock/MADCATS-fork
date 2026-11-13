@@ -2475,6 +2475,125 @@ their reads are then added together for its record; no table of that kind
 with truth has been scored. Real data with known off-target genotypes has not
 been tested either.
 
+**The polyRAD paper's own benchmark.** Clark et al. (2019) tested polyRAD on
+read depths simulated from real genotypes: SNP-array and GoldenGate genotypes
+of diversity panels and mapping populations, with reads drawn binomially at a
+mean depth of about 10 (15 to 21% of the cells have no reads). The data, the
+scripts and the results are in the Illinois Data Bank
+(doi:10.13012/B2IDB-9729830_V2), with the error of every marker under each
+model of polyRAD 0.4-0 and under EBG and GATK-style calls. `call` was run on
+the same read depths and scored as the paper did: the root mean squared error
+between true and estimated copy number at each marker, over the cells with
+reads, for the posterior mean ("continuous") and for the most probable
+genotype ("discrete"), averaged over the markers. Lower is better. `call`
+estimated an overdispersion of 500, the highest it tries, as it should for
+binomial reads (100 on the soybean set). Continuous and discrete error:
+
+| Data set | Samples × markers | polyRAD HWE (archive) | `call` hwe | polyRAD PopStruct (archive) | `call` structure | `call` norm |
+|---|---|---|---|---|---|---|
+| *Miscanthus sinensis* diversity panel, 2x | 565 × 395 | 0.154, 0.175 | 0.154, 0.175 | 0.140, 0.161 | 0.140, 0.162 | 0.150, 0.170 |
+| The same, simulated tetraploids | 565 × 395 | 0.420, 0.464 | 0.421, 0.464 | 0.338, 0.384 | 0.326, 0.372 | 0.398, 0.457 |
+| Apple diversity panel, 2x | 96 × 3,704 | 0.173, 0.197 | 0.173, 0.197 | 0.176, 0.200 | 0.172, 0.196 | 0.173, 0.196 |
+| Potato diversity panel, 4x | 221 × 3,763 | 0.439, 0.499 | 0.439, 0.499 | 0.427, 0.491 | 0.428, 0.488 | 0.438, 0.502 |
+| *Glycine soja*, 2x, selfing rate 0.95 | 1,179 × 2,957 | 0.037, 0.034 | 0.037, 0.034 | 0.038, 0.037 | not with a selfing rate | |
+
+Two sets are F1 populations, which polyRAD called with its mapping prior and
+the parents named; `call` has no family prior:
+
+| Data set | Samples × markers scored | polyRAD mapping (archive) | `call` hwe | `call` norm |
+|---|---|---|---|---|
+| *Miscanthus* F1, 2x | 85 × 185 | 0.186, 0.205 | 0.200, 0.226 | 0.186, 0.213 |
+| Potato F1, 4x | 238 × 2,306 | 0.391, 0.447 | 0.409, 0.478 | 0.385, 0.446 |
+
+- `call` with the `hwe` prior has polyRAD's published HWE error to the third
+  decimal on all five diversity sets, soybean with `--selfing-rate 0.95`.
+- `structure` equals polyRAD's population-structure model on *Miscanthus* and
+  potato and is better on the simulated tetraploids (0.326 against 0.338) and
+  on apple, where polyRAD's model was worse than its HWE.
+- `norm`, told nothing about the cross, matches polyRAD's mapping prior on
+  the *Miscanthus* F1 and is 0.006 below it on the potato F1 in continuous
+  error; in discrete error it is within 0.008.
+- polyRAD's models that use linkage between markers are better than `call` on
+  five of the seven sets, by 0.003 to 0.044 in continuous error: 0.137 on
+  *Miscanthus* (`call` at its best 0.140), 0.412 on potato (0.428), 0.164 on
+  apple (0.172), and 0.170 and 0.340 on the two F1 populations (0.186 and
+  0.385). `call` treats markers independently. On the simulated tetraploids
+  `structure` is below polyRAD's structure-and-linkage model (0.326 against
+  0.335), and on soybean linkage made polyRAD worse.
+- Without the selfing rate the soybean errors are 0.157 with `hwe`, 0.124 with
+  `norm` and 0.110 with `structure`, against 0.037 with it: for inbred
+  samples the selfing rate has to be given.
+- EBG's HWE model, the other caller in the archive with a population prior,
+  has the discrete error of `call` with `hwe` (0.464 against 0.464 on the
+  simulated tetraploids, 0.500 against 0.499 on potato), as two HWE callers
+  should on binomial reads. The GATK-style calls, which have no population
+  prior, are far above both on the polyploid sets (0.523 and 0.696).
+- With polyRAD's present defaults (overdispersion 9) `call` is a little
+  worse on these binomial reads, 0.458 against 0.421 on the simulated
+  tetraploids.
+
+The archive's eighth set is a simulated allohexaploid (soybean genotypes on
+one of three subgenomes: 0 to 2 copies of the allele out of 6, mean depth 30).
+polyRAD modelled it as three diploid genomes and has 0.194 and 0.219 with HWE
+and 0.178 and 0.199 with population structure. `call` has no such model and
+called it as an autohexaploid: 0.360 and 0.429 with `hwe` (82.1% of genotypes
+right), 0.312 and 0.365 with `norm` (87.3%), 0.336 and 0.402 with `structure`.
+Markers that sit on one subgenome of an allopolyploid are outside what `call`
+models, because it spreads the prior over all 0 to 6 copies.
+
+**Delta smelt GT-seq against alignment-based genotypes (diploid).** The
+example data of gtseq_microhap (Zenodo, doi:10.5281/zenodo.19069550,
+CC-BY-4.0) are 96 delta smelt, 410 loci, 150,000 read pairs per fish, with the
+panel's primer file and a VCF of 2,787 biallelic SNPs called from the same
+reads by BWA and bcftools on the reference genome. `generate` has been
+measured on them (see "External benchmarks on public datasets"); here they
+test `call` on real diploid reads, at targets and at off-target SNPs, against
+genotypes from an alignment-based caller.
+
+Every locus was placed on the genome (GCA_021917145.1) by its two primers,
+all 410 once. For the 368 loci with a polymorphic SNP of the comparison VCF in
+the first 81 bases, the tag is the genome sequence from the forward primer and
+the target is the SNP with the highest minor allele frequency; `generate` on
+the R1 reads gave 1,527 allele rows and assigned about 100,000 reads per
+fish, some 280 per marker. `call --vcf all --ploidy 2` wrote 368 target records and 615
+off-target records; 467 of the off-target records are a SNP of the comparison
+VCF with the same two bases (111 are not in it, 36 have more than two alleles
+and 1 has other bases). Agreement with the comparison genotype where it rests
+on 10 or more reads:
+
+| Caller | Targets (35,191 genotypes) | Off-target SNPs (44,799) |
+|---|---|---|
+| `call --prior hwe` (the defaults; overdispersion 150, background 0.003) | 99.57% of the 98.4% called | 99.80% of the 99.1% called |
+| `call --prior norm` | 99.58% of 98.4% | 99.81% of 99.1% |
+| `call --prior structure` (5 neighbours) | 99.58% of 98.5% | 99.80% of 99.1% |
+| `call --prior hwe --allele-bias fit` | 99.42% of 98.5% | 99.48% of 99.1% |
+| `call` with polyRAD's settings | 99.20% of 97.8% | 99.43% of 98.7% |
+| `call --prior hwe`, no filters | 99.41% of 99.7% | 99.70% of 100% |
+| polyRAD `IterateHWE`, overdispersion 9 | 98.66% | 99.06% |
+| polyRAD `IteratePopStruct`, overdispersion 9 | 98.80% | 99.12% |
+| polyRAD `IterateHWE`, overdispersion 150 | 99.33% of 99.7% | 99.65% |
+| updog `norm` | 99.21% | 99.36% |
+
+polyRAD and updog were given the reference and alternate counts of the 947
+two-allele records and call every genotype, so the row to compare them with is
+`call` without filters.
+
+- On real diploid reads `call` with its defaults agrees with the
+  alignment-based genotypes more often than polyRAD or updog do on the same
+  counts: by 0.2 points on targets and 0.3 on off-target SNPs over updog, and
+  by 0.75 and 0.64 over polyRAD's defaults.
+- Off-target SNPs are called as well as targets, here on real reads; the
+  simulated tables under "Off-target records" said the same.
+- Fitting the bias lowers the agreement, by 0.15 points on targets and 0.3 on
+  off-target SNPs. updog, which always fits one (median 0.98 here; 176 of 946
+  outside 0.8 to 1.25), is also below `call` without it. On the potato data
+  fitting the bias raised agreement with the array by 4.3 points. Whether it
+  helps depends on the data, which is a reason to leave it off by default.
+- polyRAD's population-structure model stopped with an error at an
+  overdispersion of 150, as it did on the potato data at 75.
+- The comparison genotypes come from the same reads, so this measures
+  agreement between callers and not error against an independent assay.
+
 **Audit against both packages' sources.** Every function of `madcats_call.py`
 was read against polyRAD 2.0.1's and updog 2.1.7's source and run against the
 packages on the same inputs, to settle what is adopted, what is adapted and
