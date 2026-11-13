@@ -2151,6 +2151,34 @@ output files of twelve runs were the same byte for byte before and after):
   only on the overdispersion tried are computed once per sample and once per
   value, not once per dosage.
 
+**Shortening the estimate when the bias is fitted: tried, and not done.** With
+the bias fitted, two thirds of a run is the read-model estimate (113 of 170 s
+above). On the benchmark table, in one process, the estimate takes 108 s
+against 17 s without the bias: it works on 107 markers, tries five background
+rates and passes over the markers nine times, and each pass fits every
+marker's bias again, 963 fits of 0.1 s. A fit calls the record at about 21
+bias values (17 to 43), and each call takes 3 passes with `hwe`, 4 with `norm`
+and 6 with the free weights the estimate uses. A profile of the fit found no
+step done twice: the time is in the passes themselves, not in the read-count
+likelihoods, which are already computed once per bias value.
+
+That leaves fitting the bias less often, which was tried in three ways:
+
+| Change | Estimate on the benchmark table | What it cost |
+|---|---|---|
+| None | 108 s; 150 and 0.0005 | |
+| Fit each marker's bias once, under the read model the search starts from | not run | The bias depends on the overdispersion it is fitted under: against the fit under the final read model, the log bias differed by a median of 0.14 and by more than 0.05 at 64 of the 107 markers (9 of 107 when fitted under an overdispersion of 100 where 150 is final) |
+| Keep each marker's bias for an overdispersion when the search moves to another background rate | 86 s; 150 and 0.001 | A different background rate on both real tables (potato: 0.003 where it is 0.001), for a whole run that is 19% shorter on the benchmark table and 5% longer on potato. Potato accuracy was unchanged (96.59% against 96.57%) |
+| Start the search from an estimate made on a quarter of the markers | 53 s; 150 and 0.0005 | No gain without the bias (17.3 s against 16.9 s); with an eighth of the markers, 91 s with the bias and 24 s without. The gain depends on the pilot landing near the answer |
+
+None was kept. The first two change what is estimated, because two
+neighbouring background rates often fit almost equally well and any change in
+the biases decides between them; the third leaves the estimate alone but does
+not reliably save time. A run with the bias is shortened by more workers, by
+giving `--overdispersion` and `--background-rate` as numbers once a first run
+has estimated them (57 s where the full run takes 170 s), or by a compiled
+kernel, which is not planned.
+
 **The structure prior (`--prior structure`).** polyRAD's `IteratePopStruct`
 gives each sample its own allele frequencies: it runs a principal component
 analysis of the genotype estimates of all markers, regresses every allele on
