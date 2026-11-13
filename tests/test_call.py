@@ -24,12 +24,12 @@ import madcats  # noqa: E402
 import madcats_call as call  # noqa: E402
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "madcats-demo"
-FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "polyrad_parity.json"
+POLYRAD_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "polyrad_parity.json"
 UPDOG_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "updog_norm.json"
 
 
-def load_fixture():
-    with open(FIXTURE_PATH) as handle:
+def load_polyrad_fixture():
+    with open(POLYRAD_FIXTURE_PATH) as handle:
         fixture = json.load(handle)
     fixture["sample_index"] = {name: index for index, name in enumerate(fixture["samples"])}
     fixture["allele_index"] = {name: index for index, name in enumerate(fixture["alleles"])}
@@ -123,8 +123,8 @@ class AllelicBiasTests(unittest.TestCase):
     def test_bias_is_estimated_and_corrects_the_calls(self):
         table = simulated_two_allele_markers(60, 4, markers=1, samples=150, bias=0.5, seed=21)[0]
         ploidies = [4] * 150
-        without = call.call_marker(table, ploidies, call.ModelSettings(overdispersion=60))
-        fitted = call.call_marker(table, ploidies, call.ModelSettings(overdispersion=60, fit_allele_bias=True))
+        without = call.call_record(table, ploidies, call.ModelSettings(overdispersion=60))
+        fitted = call.call_record(table, ploidies, call.ModelSettings(overdispersion=60, fit_allele_bias=True))
         self.assertEqual(without.allele_biases, [1.0, 1.0])
         self.assertIsNone(without.bias_fit)
         self.assertAlmostEqual(fitted.allele_biases[1], 0.5, delta=0.06)
@@ -142,17 +142,17 @@ class AllelicBiasTests(unittest.TestCase):
     def test_fit_is_the_best_of_all_the_bias_values_tried(self):
         table = simulated_two_allele_markers(60, 4, markers=1, samples=100, bias=1.6, seed=5)[0]
         settings = call.ModelSettings(overdispersion=60, fit_allele_bias=True)
-        fitted = call.call_marker(table, [4] * 100, settings)
+        fitted = call.call_record(table, [4] * 100, settings)
         chosen = fitted.bias_fit
         self.assertGreaterEqual(chosen.fits, 15)
-        self.assertIn(chosen.best_start, call.BIAS_LOG_STARTS)
+        self.assertIn(chosen.nearest_log_start, call.BIAS_LOG_STARTS)
         # No fixed bias on a fine grid gives a higher value of what the fit maximises.
         marker_depths = [sum(sample) for sample in table]
         alternate = [[sample[1]] for sample in table]
         constants = [[call.count_constant(sample[1], sum(sample), 60)] for sample in table]
         for step in range(-20, 21):
             log_bias = step / 10
-            at_bias = call._iterate_marker(
+            at_bias = call._iterate_record(
                 alternate, marker_depths, constants, [4] * 100, settings,
                 [call.depth_ratio_frequencies(table)[1]], [math.exp(log_bias)],
             )
@@ -167,12 +167,12 @@ class AllelicBiasTests(unittest.TestCase):
         settings = call.ModelSettings(
             overdispersion=60, contamination_rate=0.0, background_rate=0.005, fit_allele_bias=True
         )
-        fitted = call.call_marker(table, [4] * 63, settings)
+        fitted = call.call_record(table, [4] * 63, settings)
         self.assertAlmostEqual(fitted.allele_biases[1], 1.0, delta=0.02)
 
     def test_records_with_more_than_two_alleles_get_no_bias(self):
         depths = [[20, 10, 5], [0, 30, 6], [14, 0, 20]] * 5
-        result = call.call_marker(depths, [4] * 15, call.ModelSettings(overdispersion=40, fit_allele_bias=True))
+        result = call.call_record(depths, [4] * 15, call.ModelSettings(overdispersion=40, fit_allele_bias=True))
         self.assertEqual(result.allele_biases, [1.0, 1.0, 1.0])
         self.assertIsNone(result.bias_fit)
 
@@ -239,30 +239,30 @@ class NormalPriorMarkerTests(unittest.TestCase):
         # Every sample is homozygous.  The Hardy-Weinberg prior expects mostly intermediate
         # dosages at this allele frequency; the fitted normal prior becomes flat instead.
         table = simulated_two_allele_markers(40, 4, markers=1, samples=80, genotypes="inbred")[0]
-        norm = call.call_marker(table, [4] * 80, call.ModelSettings(prior=call.PRIOR_NORM, overdispersion=40))
+        norm = call.call_record(table, [4] * 80, call.ModelSettings(prior=call.PRIOR_NORM, overdispersion=40))
         self.assertTrue(norm.converged)
         prior = norm.priors[4][1]
         self.assertLess(max(prior) - min(prior), 0.05)
-        hwe = call.call_marker(table, [4] * 80, call.ModelSettings(prior=call.PRIOR_HWE, overdispersion=40))
+        hwe = call.call_record(table, [4] * 80, call.ModelSettings(prior=call.PRIOR_HWE, overdispersion=40))
         self.assertLess(hwe.priors[4][1][0] + hwe.priors[4][1][4], 0.3)
 
     def test_each_ploidy_group_gets_its_own_fit(self):
         diploids = simulated_two_allele_markers(40, 2, markers=1, samples=30, seed=3)[0]
         hexaploids = simulated_two_allele_markers(40, 6, markers=1, samples=30, seed=5)[0]
         settings = call.ModelSettings(prior=call.PRIOR_NORM, overdispersion=40)
-        together = call.call_marker(diploids + hexaploids, [2] * 30 + [6] * 30, settings)
+        together = call.call_record(diploids + hexaploids, [2] * 30 + [6] * 30, settings)
         self.assertEqual(sorted(together.normal_prior_parameters), [2, 6])
         self.assertEqual([len(together.priors[2][1]), len(together.priors[6][1])], [3, 7])
         # The groups share only the allele frequency used by the contamination term, so a
         # group fitted with the other present is almost the group fitted alone.
-        alone = call.call_marker(hexaploids, [6] * 30, settings)
+        alone = call.call_record(hexaploids, [6] * 30, settings)
         for with_others, by_itself in zip(together.priors[6][1], alone.priors[6][1]):
             self.assertAlmostEqual(with_others, by_itself, places=3)
 
     def test_small_ploidy_group_uses_hardy_weinberg_proportions(self):
         tetraploids = simulated_two_allele_markers(40, 4, markers=1, samples=40, seed=7)[0]
         triploids = [[20, 9], [31, 0], [8, 19]]
-        result = call.call_marker(
+        result = call.call_record(
             tetraploids + triploids, [4] * 40 + [3] * 3, call.ModelSettings(prior=call.PRIOR_NORM, overdispersion=40)
         )
         self.assertEqual(sorted(result.normal_prior_parameters), [4])
@@ -309,7 +309,7 @@ class UpdogParityTests(unittest.TestCase):
                 [allele_depth, marker_depth - allele_depth]
                 for allele_depth, marker_depth in zip(marker["allele_depth"], marker["marker_depth"])
             ]
-            result = call.call_marker(depths, [ploidy] * len(depths), settings)
+            result = call.call_record(depths, [ploidy] * len(depths), settings)
             self.assertTrue(result.converged, marker["name"])
             for value, expected in zip(result.priors[ploidy][0], marker["prior"]):
                 self.assertAlmostEqual(value, expected, places=4, msg=marker["name"])
@@ -338,7 +338,7 @@ class UpdogParityTests(unittest.TestCase):
                 [allele_depth, marker_depth - allele_depth]
                 for allele_depth, marker_depth in zip(marker["allele_depth"], marker["marker_depth"])
             ]
-            result = call.call_marker(depths, [ploidy] * len(depths), settings)
+            result = call.call_record(depths, [ploidy] * len(depths), settings)
             label = f"{marker['name']} {marker['model']}"
             # updog reports the bias of the allele it was given the read counts of: here the first.
             self.assertAlmostEqual(result.allele_biases[0] / marker["bias"], 1.0, delta=0.01, msg=label)
@@ -355,13 +355,13 @@ class UpdogParityTests(unittest.TestCase):
 
 class MarkerTests(unittest.TestCase):
     def test_marker_without_reads_is_not_callable(self):
-        result = call.call_marker([[0, 0], [0, 0]], [2, 2])
-        self.assertFalse(result.callable)
+        result = call.call_record([[0, 0], [0, 0]], [2, 2])
+        self.assertFalse(result.has_reads)
 
     def test_two_allele_marginals_mirror_each_other(self):
         depths = [[30, 0], [14, 17], [0, 25], [22, 9], [5, 31]]
         ploidies = [2, 4, 4, 6, 3]
-        result = call.call_marker(depths, ploidies)
+        result = call.call_record(depths, ploidies)
         for sample_posteriors in result.posteriors:
             first, second = sample_posteriors
             for value, mirrored in zip(first, reversed(second)):
@@ -369,21 +369,21 @@ class MarkerTests(unittest.TestCase):
 
     def test_clear_diploid_genotypes_are_called(self):
         depths = [[40, 0], [21, 19], [0, 38], [18, 22], [35, 0], [0, 41]]
-        result = call.call_marker(depths, [2] * 6)
+        result = call.call_record(depths, [2] * 6)
         self.assertTrue(result.converged)
         called = [call.most_probable_dosage(sample[1]) for sample in result.posteriors]
         self.assertEqual(called, [0, 1, 2, 1, 0, 2])
 
     def test_iteration_limit_is_reported(self):
         depths = [[9, 3], [2, 8], [5, 5], [1, 0]]
-        result = call.call_marker(depths, [4] * 4, call.ModelSettings(tolerance=1e-15, max_iterations=2))
+        result = call.call_record(depths, [4] * 4, call.ModelSettings(tolerance=1e-15, max_iterations=2))
         self.assertEqual(result.iterations, 2)
         self.assertFalse(result.converged)
         self.assertGreater(result.final_change, 1e-15)
 
     def test_uniform_prior_is_a_single_pass(self):
         depths = [[9, 3], [2, 8], [0, 0]]
-        result = call.call_marker(depths, [4] * 3, call.ModelSettings(prior=call.PRIOR_UNIFORM))
+        result = call.call_record(depths, [4] * 3, call.ModelSettings(prior=call.PRIOR_UNIFORM))
         self.assertEqual(result.iterations, 1)
         # A sample without reads keeps the prior, so no dosage stands out.
         self.assertEqual(result.posteriors[2][0], [0.2] * 5)
@@ -475,12 +475,12 @@ def simulated_two_allele_markers(
     return table
 
 
-class OverdispersionEstimateTests(unittest.TestCase):
+class ReadModelEstimateTests(unittest.TestCase):
     def test_marker_likelihood_is_the_prior_weighted_average_over_dosages(self):
         depths = [[13, 7], [0, 0], [20, 0], [9, 11]]
         ploidies = [4, 4, 4, 4]
         settings = call.ModelSettings(overdispersion=12)
-        result = call.call_marker(depths, ploidies, settings)
+        result = call.call_record(depths, ploidies, settings)
         frequency = call.frequency_for_likelihood(result.allele_frequencies[1], len(depths))
         grid = (5, 12, 60)
         for overdispersion, observed in zip(
@@ -514,7 +514,7 @@ class OverdispersionEstimateTests(unittest.TestCase):
                 self.assertIn(estimate.value, (16, 18, 20, 25))
                 self.assertIsNone(estimate.at_limit)
                 self.assertEqual(estimate.markers_used, 40)
-                self.assertEqual(max(estimate.log_likelihood, key=estimate.log_likelihood.get), estimate.value)
+                self.assertEqual(max(estimate.log_likelihood_by_value, key=estimate.log_likelihood_by_value.get), estimate.value)
 
     def test_inbred_samples_end_at_the_lowest_value(self):
         # Without heterozygotes the counts say nothing about scatter, and the
@@ -536,7 +536,7 @@ class OverdispersionEstimateTests(unittest.TestCase):
         settings = call.ModelSettings(prior=call.PRIOR_NORM, contamination_rate=0.0)
         estimate = call.estimate_read_model(table, [4] * 80, settings)
         self.assertEqual(estimate.background_rate, 0.005)
-        self.assertIn(estimate.overdispersion.value, (30, 40, 50))
+        self.assertIn(estimate.overdispersion_estimate.value, (30, 40, 50))
         # Each rate tried is recorded with its overdispersion and log-likelihood; the chosen one is the best.
         best_rate = max(estimate.by_background_rate, key=lambda rate: estimate.by_background_rate[rate][1])
         self.assertEqual(best_rate, estimate.background_rate)
@@ -560,7 +560,7 @@ class OverdispersionEstimateTests(unittest.TestCase):
 
     def test_free_weights_prior_is_the_share_of_each_dosage(self):
         table = simulated_two_allele_markers(60, 4, markers=1, samples=120, genotypes="partly inbred", seed=4)[0]
-        result = call.call_marker(table, [4] * 120, call.ModelSettings(prior=call.PRIOR_FREE, overdispersion=60))
+        result = call.call_record(table, [4] * 120, call.ModelSettings(prior=call.PRIOR_FREE, overdispersion=60))
         self.assertTrue(result.converged)
         prior = result.priors[4][1]
         self.assertAlmostEqual(sum(prior), 1.0, places=9)
@@ -577,9 +577,9 @@ class OverdispersionEstimateTests(unittest.TestCase):
         settings = call.ModelSettings(prior=call.PRIOR_NORM, contamination_rate=0.0)
         fixed_rate = call.estimate_read_model(table, [4] * 60, settings, background_rates=(0.005,))
         self.assertEqual(list(fixed_rate.by_background_rate), [0.005])
-        self.assertIn(fixed_rate.overdispersion.value, (30, 40, 50))
+        self.assertIn(fixed_rate.overdispersion_estimate.value, (30, 40, 50))
         fixed_scatter = call.estimate_read_model(table, [4] * 60, settings, overdispersions=(40,))
-        self.assertEqual(fixed_scatter.overdispersion.value, 40)
+        self.assertEqual(fixed_scatter.overdispersion_estimate.value, 40)
         self.assertIn(fixed_scatter.background_rate, (0.003, 0.005))
 
     def test_too_low_a_background_rate_lowers_the_overdispersion_estimate(self):
@@ -643,14 +643,14 @@ class StructurePriorTests(unittest.TestCase):
 
     def test_neighbours_come_from_the_sample_s_own_group(self):
         choice = self.choice
-        self.assertIn(choice.count, (10, 20))
+        self.assertIn(choice.neighbours_per_sample, (10, 20))
         self.assertIsNone(choice.reason)
         self.assertEqual(choice.markers_used, 120)
         self.assertEqual(sorted(choice.error_by_count), [0, 5, 10, 20, 40])
-        self.assertLess(choice.error_by_count[choice.count], choice.error_by_count[0])
+        self.assertLess(choice.error_by_count[choice.neighbours_per_sample], choice.error_by_count[0])
         own_group = total = 0
         for sample, sample_neighbours in enumerate(choice.neighbours):
-            self.assertEqual(len(sample_neighbours), choice.count)
+            self.assertEqual(len(sample_neighbours), choice.neighbours_per_sample)
             self.assertNotIn(sample, sample_neighbours)
             # A group has 19 other samples, so only the nearest 10 can all be from it.
             for other in sample_neighbours[:10]:
@@ -662,7 +662,7 @@ class StructurePriorTests(unittest.TestCase):
         def share_correct(settings):
             right = total = 0
             for depths, dosages in zip(self.table, self.truth):
-                result = call.call_marker(depths, self.ploidies, settings)
+                result = call.call_record(depths, self.ploidies, settings)
                 for sample_posteriors, dosage in zip(result.posteriors, dosages):
                     total += 1
                     right += call.most_probable_dosage(sample_posteriors[1]) == dosage
@@ -677,19 +677,19 @@ class StructurePriorTests(unittest.TestCase):
         table = simulated_two_allele_markers(50, 4, markers=120, samples=40)
         ploidies = [4] * 40
         choice = call.find_neighbours(table, ploidies, self.settings)
-        self.assertEqual(choice.count, 0)
+        self.assertEqual(choice.neighbours_per_sample, 0)
         self.assertIn("no better than the whole table", choice.reason)
         self.assertEqual(choice.neighbours, tuple(() for _ in ploidies))
-        without = call.call_marker(table[0], ploidies, dataclasses.replace(self.settings, neighbours=choice.neighbours))
-        hwe = call.call_marker(table[0], ploidies, dataclasses.replace(self.settings, prior=call.PRIOR_HWE))
+        without = call.call_record(table[0], ploidies, dataclasses.replace(self.settings, neighbours=choice.neighbours))
+        hwe = call.call_record(table[0], ploidies, dataclasses.replace(self.settings, prior=call.PRIOR_HWE))
         self.assertEqual(without.posteriors, hwe.posteriors)
         self.assertEqual(without.sample_frequencies, [])
 
     def test_a_table_too_small_to_compare_samples_gets_no_neighbours(self):
         few_samples = call.find_neighbours([depths[:10] for depths in self.table], [4] * 10, self.settings)
-        self.assertEqual((few_samples.count, few_samples.reason), (0, "fewer than 20 samples"))
+        self.assertEqual((few_samples.neighbours_per_sample, few_samples.reason), (0, "fewer than 20 samples"))
         few_markers = call.find_neighbours(self.table[:30], self.ploidies, self.settings)
-        self.assertEqual((few_markers.count, few_markers.reason), (0, "fewer than 100 markers with reads"))
+        self.assertEqual((few_markers.neighbours_per_sample, few_markers.reason), (0, "fewer than 100 markers with reads"))
         self.assertEqual(few_markers.markers_used, 30)
 
     def test_a_sample_s_prior_follows_its_neighbours(self):
@@ -698,7 +698,7 @@ class StructurePriorTests(unittest.TestCase):
         depths = [[3, 1], [3, 1], [0, 12], [0, 14], [1, 11], [13, 0], [12, 0], [14, 1]]
         neighbours = ((2, 3, 4), (5, 6, 7), (0, 3, 4), (0, 2, 4), (0, 2, 3), (1, 6, 7), (1, 5, 7), (1, 5, 6))
         settings = dataclasses.replace(self.settings, neighbours=neighbours)
-        result = call.call_marker(depths, [2] * 8, settings)
+        result = call.call_record(depths, [2] * 8, settings)
         self.assertTrue(result.converged)
         self.assertGreater(result.sample_frequencies[0][1], 0.7)
         self.assertLess(result.sample_frequencies[1][1], 0.2)
@@ -716,7 +716,7 @@ class StructurePriorTests(unittest.TestCase):
     def test_records_with_more_than_two_alleles(self):
         depths = [[6, 2, 0], [5, 3, 1], [0, 7, 2], [1, 6, 3], [8, 0, 0], [7, 1, 0]]
         neighbours = ((1, 4, 5), (0, 4, 5), (3, 1), (2, 1), (0, 5), (0, 4))
-        result = call.call_marker(depths, [4] * 6, dataclasses.replace(self.settings, neighbours=neighbours))
+        result = call.call_record(depths, [4] * 6, dataclasses.replace(self.settings, neighbours=neighbours))
         self.assertEqual([len(of_sample) for of_sample in result.sample_frequencies], [3] * 6)
         for sample_posteriors in result.posteriors:
             self.assertEqual(len(sample_posteriors), 3)
@@ -728,7 +728,7 @@ class StructurePriorTests(unittest.TestCase):
             call.ModelSettings(prior=call.PRIOR_STRUCTURE, fit_allele_bias=True)
         settings = dataclasses.replace(self.settings, neighbours=((1,), (0,)))
         with self.assertRaisesRegex(ValueError, "one entry per sample"):
-            call.call_marker([[4, 4], [5, 3], [2, 6]], [2] * 3, settings)
+            call.call_record([[4, 4], [5, 3], [2, 6]], [2] * 3, settings)
 
 
 class PolyradParityTests(unittest.TestCase):
@@ -736,7 +736,7 @@ class PolyradParityTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.fixture = load_fixture()
+        cls.fixture = load_polyrad_fixture()
         cls.settings = call.ModelSettings(
             overdispersion=cls.fixture["overdispersion"],
             contamination_rate=cls.fixture["contamination_rate"],
@@ -807,7 +807,7 @@ class PolyradParityTests(unittest.TestCase):
             max_iterations=1000,
         )
         for columns in fixture["locus_columns"].values():
-            result = call.call_marker(self.locus_depths(columns), fixture["ploidy"], settings)
+            result = call.call_record(self.locus_depths(columns), fixture["ploidy"], settings)
             self.assertTrue(result.converged)
             for column, frequency in zip(columns, result.allele_frequencies):
                 self.assertAlmostEqual(frequency, fixture["selfing"]["allele_frequency"][column], places=7)
@@ -825,7 +825,7 @@ class PolyradParityTests(unittest.TestCase):
         fixture = self.fixture
         for columns in fixture["locus_columns"].values():
             depths = self.locus_depths(columns)
-            result = call.call_marker(depths, fixture["ploidy"], self.settings)
+            result = call.call_record(depths, fixture["ploidy"], self.settings)
             self.assertTrue(result.converged)
             for column, frequency in zip(columns, result.allele_frequencies):
                 self.assertAlmostEqual(frequency, fixture["iterated"]["allele_frequency"][column], places=7)
@@ -915,7 +915,7 @@ class CommandTestCase(unittest.TestCase):
                 writer.writerow([*["x" for _ in leading_columns], f"{marker}|{category}", marker, sequence, *counts])
         return path
 
-    def call(self, madc, *options):
+    def call_madc(self, madc, *options):
         prefix = self.dir / "calls"
         self.stderr = run_madcats(["call", "--madc", madc, "--output-prefix", prefix, "--jobs", "1", *options])
         with open(str(prefix) + ".qc.json") as handle:
@@ -931,7 +931,7 @@ class TargetVcfTests(CommandTestCase):
         madc = self.write_madc(
             [("M1", "Ref", REF_TAG, [30, 15, 0]), ("M1", "Alt", ALT_TAG, [0, 16, 28])], ["s1", "s2", "s3"]
         )
-        prefix = self.call(madc)
+        prefix = self.call_madc(madc)
         self.assertTrue(Path(str(prefix) + ".targets.vcf").is_file())
         self.assertFalse(Path(str(prefix) + ".all.vcf").exists())
         self.assertFalse(Path(str(prefix) + ".haplotypes.vcf").exists())
@@ -955,7 +955,7 @@ class TargetVcfTests(CommandTestCase):
             ],
             ["s1", "s2", "s3"],
         )
-        prefix = self.call(madc)
+        prefix = self.call_madc(madc)
         (record,) = self.vcf(prefix, "target")[2]
         self.assertEqual([sample["AD"] for sample in record["samples"]], ["25,0", "10,14", "0,26"])
         self.assertEqual([sample["DP"] for sample in record["samples"]], ["25", "24", "26"])
@@ -972,7 +972,7 @@ class TargetVcfTests(CommandTestCase):
             ],
             ["s1", "s2"],
         )
-        prefix = self.call(madc, "--max-other-fraction", "0.5")
+        prefix = self.call_madc(madc, "--max-other-fraction", "0.5")
         (record,) = self.vcf(prefix, "target")[2]
         self.assertEqual([sample["GT"] for sample in record["samples"]], ["./.", "0/1"])
         self.assertEqual(self.qc["vcfs"]["target"]["genotypes_missing_excluded_read_share"], 1)
@@ -981,7 +981,7 @@ class TargetVcfTests(CommandTestCase):
         madc = self.write_madc(
             [("M1", "Ref", REF_TAG, [30, 4, 0, 12]), ("M1", "Alt", ALT_TAG, [0, 3, 0, 14])], ["s1", "s2", "s3", "s4"]
         )
-        prefix = self.call(madc)
+        prefix = self.call_madc(madc)
         (record,) = self.vcf(prefix, "target")[2]
         low_depth, no_reads = record["samples"][1], record["samples"][2]
         self.assertEqual((low_depth["GT"], low_depth["AD"], low_depth["DP"]), ("./.", "4,3", "7"))
@@ -994,7 +994,7 @@ class TargetVcfTests(CommandTestCase):
         self.assertEqual(self.qc["vcfs"]["target"]["genotypes_missing_low_depth"], 1)
         self.assertEqual(self.qc["vcfs"]["target"]["genotypes_missing_no_reads"], 1)
 
-        prefix = self.call(madc, "--min-dp", "0")
+        prefix = self.call_madc(madc, "--min-dp", "0")
         (record,) = self.vcf(prefix, "target")[2]
         self.assertEqual(record["samples"][1]["GT"], "0/1")
 
@@ -1003,10 +1003,10 @@ class TargetVcfTests(CommandTestCase):
         madc = self.write_madc(
             [("M1", "Ref", REF_TAG, [16, 30, 14, 0]), ("M1", "Alt", ALT_TAG, [4, 0, 15, 30])], ["s1", "s2", "s3", "s4"]
         )
-        prefix = self.call(madc, "--min-gq", "0")
+        prefix = self.call_madc(madc, "--min-gq", "0")
         relaxed = self.vcf(prefix, "target")[2][0]["samples"][0]
         self.assertNotEqual(relaxed["GT"], "./.")
-        prefix = self.call(madc, "--min-gq", str(int(relaxed["GQ"]) + 1))
+        prefix = self.call_madc(madc, "--min-gq", str(int(relaxed["GQ"]) + 1))
         strict = self.vcf(prefix, "target")[2][0]["samples"][0]
         self.assertEqual((strict["GT"], strict["GQ"]), ("./.", relaxed["GQ"]))
         self.assertEqual(self.qc["vcfs"]["target"]["genotypes_missing_low_confidence"], 1)
@@ -1019,7 +1019,7 @@ class TargetVcfTests(CommandTestCase):
         ploidy_file = self.dir / "ploidy.tsv"
         ploidy_file.write_text("sample\tploidy\ntet\t4\nhex\t6\ntri\t3\nnot_in_madc\t8\n")
         # The uniform prior keeps the expected calls a matter of read fractions alone.
-        prefix = self.call(madc, "--ploidy-file", ploidy_file, "--min-gq", "0", "--prior", "uniform")
+        prefix = self.call_madc(madc, "--ploidy-file", ploidy_file, "--min-gq", "0", "--prior", "uniform")
         (record,) = self.vcf(prefix, "target")[2]
         genotypes = {name: sample for name, sample in zip(["dip", "tet", "hex", "tri"], record["samples"])}
         self.assertEqual(genotypes["dip"]["GT"], "0/0")
@@ -1040,9 +1040,9 @@ class TargetVcfTests(CommandTestCase):
             [("M1", "Ref", REF_TAG, [40] * 11 + [10]), ("M1", "Alt", ALT_TAG, [0] * 11 + [1])],
             [f"s{number}" for number in range(12)],
         )
-        prefix = self.call(madc, "--prior", "uniform")
+        prefix = self.call_madc(madc, "--prior", "uniform")
         uniform = self.vcf(prefix, "target")[2][0]["samples"][-1]
-        prefix = self.call(madc, "--prior", "hwe")
+        prefix = self.call_madc(madc, "--prior", "hwe")
         hwe = self.vcf(prefix, "target")[2][0]["samples"][-1]
         # 10 Ref reads and 1 Alt read are most likely from a heterozygote, whatever the prior ...
         for sample in (uniform, hwe):
@@ -1057,7 +1057,7 @@ class TargetVcfTests(CommandTestCase):
         madc = self.write_madc(
             [("M1", "Ref", REF_TAG, [30, 15]), ("M1", "Alt", two_differences, [0, 16])], ["s1", "s2"]
         )
-        prefix = self.call(madc, "--vcf", "target", "haplotype")
+        prefix = self.call_madc(madc, "--vcf", "target", "haplotype")
         self.assertEqual(self.vcf(prefix, "target")[2], [])
         self.assertEqual(self.qc["vcfs"]["target"]["targets_skipped_ambiguous_design"], 1)
         self.assertIn("no target record", self.stderr)
@@ -1071,13 +1071,13 @@ class TargetVcfTests(CommandTestCase):
                 ["MarkerName", "LeftPrimerSequence", "RefSequence", "AltSequence", "VariantPositionInTagSequence"]
             )
             writer.writerow(["M1", REF_TAG[:8], REF_TAG, two_differences, 25])
-        prefix = self.call(madc, "--reference-tags", tags)
+        prefix = self.call_madc(madc, "--reference-tags", tags)
         (record,) = self.vcf(prefix, "target")[2]
         self.assertEqual((record["POS"], record["REF"], record["ALT"]), (25, "C", ["G"]))
 
     def test_marker_without_an_alt_row_has_no_target_record(self):
         madc = self.write_madc([("M1", "Ref", REF_TAG, [30, 15])], ["s1", "s2"])
-        prefix = self.call(madc)
+        prefix = self.call_madc(madc)
         self.assertEqual(self.vcf(prefix, "target")[2], [])
         self.assertEqual(self.qc["vcfs"]["target"]["targets_skipped_no_alt_row"], 1)
 
@@ -1087,7 +1087,7 @@ class TargetVcfTests(CommandTestCase):
         madc = self.write_madc(
             [("M1", "Ref", REF_TAG, [30, 15, 0]), ("M1", "Alt", deletion_alt, [0, 16, 28])], ["s1", "s2", "s3"]
         )
-        prefix = self.call(madc)
+        prefix = self.call_madc(madc)
         (record,) = self.vcf(prefix, "target")[2]
         self.assertEqual(len(record["REF"]) - len(record["ALT"][0]), 2)
         self.assertEqual(record["REF"], REF_TAG[record["POS"] - 1 : record["POS"] + 2])
@@ -1101,7 +1101,7 @@ class TargetVcfTests(CommandTestCase):
             writer.writerow(["v1", "M1|Ref_0001", "M1", REF_TAG, "30.0", "14.0"])
             writer.writerow(["v1", "M1|Alt_0002", "M1", ALT_TAG, "0.0", "15.0"])
             writer.writerow(["v1", "M1|RefMatch_0001", "M1", REF_TAG_SITE_20, "6.0", "0.0"])
-        prefix = self.call(path)
+        prefix = self.call_madc(path)
         (record,) = self.vcf(prefix, "target")[2]
         self.assertEqual([sample["AD"] for sample in record["samples"]], ["36,0", "14,15"])
 
@@ -1112,7 +1112,7 @@ class TargetVcfTests(CommandTestCase):
             writer.writerow(["AlleleID", "CloneID", "AlleleSequence", "readCountSum", "s1", "s2"])
             writer.writerow(["M1|Ref_0001", "M1", REF_TAG, 44, 30, 14])
             writer.writerow(["M1|Alt_0002", "M1", ALT_TAG, 15, 0, 15])
-        prefix = self.call(path)
+        prefix = self.call_madc(path)
         _, samples, (record,) = self.vcf(prefix, "target")
         self.assertEqual(samples, ["s1", "s2"])
         self.assertEqual([sample["AD"] for sample in record["samples"]], ["30,0", "14,15"])
@@ -1121,7 +1121,7 @@ class TargetVcfTests(CommandTestCase):
         madc = self.write_madc(
             [("M1", "Ref", REF_TAG, [-100, 15, 40]), ("M1", "Alt", ALT_TAG, [20, 16, 0])], ["s1", "s2", "s3"]
         )
-        prefix = self.call(madc)
+        prefix = self.call_madc(madc)
         (record,) = self.vcf(prefix, "target")[2]
         self.assertEqual((record["samples"][0]["GT"], record["samples"][0]["DP"]), ("./.", "0"))
         self.assertEqual(self.qc["markers"]["sample_cells_cleared_for_negative_counts"], 1)
@@ -1131,7 +1131,7 @@ class TargetVcfTests(CommandTestCase):
         madc = self.write_madc(
             [("M1", "Ref", REF_TAG, [9, 2, 15, 11]), ("M1", "Alt", ALT_TAG, [3, 8, 5, 10])], ["s1", "s2", "s3", "s4"]
         )
-        self.call(madc, "--ploidy", "4", "--max-iterations", "1", "--tol", "1e-12")
+        self.call_madc(madc, "--ploidy", "4", "--max-iterations", "1", "--tol", "1e-12")
         self.assertEqual(self.qc["vcfs"]["target"]["records_not_converged"], 1)
         self.assertIn("--max-iterations", self.stderr)
 
@@ -1146,7 +1146,7 @@ class AllVcfTests(CommandTestCase):
         ]
 
     def test_target_and_off_target_substitution(self):
-        prefix = self.call(self.write_madc(self.rows(), ["s1", "s2", "s3", "s4"]), "--vcf", "all", "target")
+        prefix = self.call_madc(self.write_madc(self.rows(), ["s1", "s2", "s3", "s4"]), "--vcf", "all", "target")
         records = self.vcf(prefix, "all")[2]
         self.assertEqual([(record["POS"], record["ID"]) for record in records], [(12, "M1"), (20, "M1_20")])
         target, site = records
@@ -1162,7 +1162,7 @@ class AllVcfTests(CommandTestCase):
 
     def test_third_base_at_a_site_gives_a_multiallelic_record_with_mpc(self):
         rows = self.rows() + [("M1", "RefMatch", with_base(REF_TAG, 20, "A"), [0, 0, 0, 22])]
-        prefix = self.call(self.write_madc(rows, ["s1", "s2", "s3", "s4"]), "--vcf", "all")
+        prefix = self.call_madc(self.write_madc(rows, ["s1", "s2", "s3", "s4"]), "--vcf", "all")
         site = self.vcf(prefix, "all")[2][1]
         # Alternate bases are ordered by read count: T has 28 reads, A has 22.
         self.assertEqual((site["REF"], site["ALT"]), ("G", ["T", "A"]))
@@ -1174,7 +1174,7 @@ class AllVcfTests(CommandTestCase):
         # A RefMatch row that deletes bases 19-21, which removes position 20.
         deletion = REF_TAG[:18] + REF_TAG[21:] + "TTT"
         rows = self.rows() + [("M1", "RefMatch", deletion, [0, 0, 0, 18])]
-        prefix = self.call(self.write_madc(rows, ["s1", "s2", "s3", "s4"]), "--vcf", "all")
+        prefix = self.call_madc(self.write_madc(rows, ["s1", "s2", "s3", "s4"]), "--vcf", "all")
         records = self.vcf(prefix, "all")[2]
         # The deletion itself is not a record: only substitutions are, besides the target.
         self.assertEqual([record["POS"] for record in records], [12, 20])
@@ -1184,7 +1184,7 @@ class AllVcfTests(CommandTestCase):
 
     def test_base_substitution_at_the_target_is_not_a_second_record(self):
         rows = self.rows() + [("M1", "Other", OTHER_TAG, [0, 0, 0, 9])]
-        prefix = self.call(self.write_madc(rows, ["s1", "s2", "s3", "s4"]), "--vcf", "all")
+        prefix = self.call_madc(self.write_madc(rows, ["s1", "s2", "s3", "s4"]), "--vcf", "all")
         records = self.vcf(prefix, "all")[2]
         self.assertEqual([record["POS"] for record in records], [12, 20])
         self.assertEqual(records[0]["samples"][3]["XD"], "9")
@@ -1201,7 +1201,7 @@ class HaplotypeVcfTests(CommandTestCase):
             ("M2", "Ref", REF_TAG, [25, 25, 25]),
             ("M2", "Alt", ALT_TAG, [0, 0, 0]),
         ]
-        prefix = self.call(self.write_madc(rows, ["s1", "s2", "s3"]), "--vcf", "haplotype")
+        prefix = self.call_madc(self.write_madc(rows, ["s1", "s2", "s3"]), "--vcf", "haplotype")
         header, _, records = self.vcf(prefix, "haplotype")
         first, second = records
         self.assertEqual((first["POS"], first["REF"]), (1, REF_TAG))
@@ -1232,11 +1232,11 @@ class HaplotypeVcfTests(CommandTestCase):
             ("M1", "Alt", ALT_TAG, [4, 0, 15, 30]),
         ]
         madc = self.write_madc(rows, ["s1", "s2", "s3", "s4"])
-        prefix = self.call(madc, "--vcf", "haplotype", "--min-marginal-posterior", "0")
+        prefix = self.call_madc(madc, "--vcf", "haplotype", "--min-marginal-posterior", "0")
         relaxed = self.vcf(prefix, "haplotype")[2][0]["samples"][0]
         self.assertNotEqual(relaxed["GT"], "./.")
         self.assertLess(float(relaxed["MPC"]), 0.999)
-        prefix = self.call(madc, "--vcf", "haplotype", "--min-marginal-posterior", "0.999")
+        prefix = self.call_madc(madc, "--vcf", "haplotype", "--min-marginal-posterior", "0.999")
         strict = self.vcf(prefix, "haplotype")[2][0]["samples"][0]
         self.assertEqual((strict["GT"], strict["MPC"]), ("./.", relaxed["MPC"]))
 
@@ -1249,7 +1249,7 @@ class HaplotypeVcfTests(CommandTestCase):
             ("M1", "RefMatch_1", third, [22, 18, 30, 9, 0]),
             ("M1", "RefMatch_2", fourth, [19, 0, 0, 11, 58]),
         ]
-        prefix = self.call(self.write_madc(rows, ["s1", "s2", "s3", "s4", "s5"]), "--vcf", "haplotype", "--ploidy", "6",
+        prefix = self.call_madc(self.write_madc(rows, ["s1", "s2", "s3", "s4", "s5"]), "--vcf", "haplotype", "--ploidy", "6",
                            "--min-marginal-posterior", "0")
         (record,) = self.vcf(prefix, "haplotype")[2]
         for sample in record["samples"]:
@@ -1273,7 +1273,7 @@ class CommandBehaviourTests(CommandTestCase):
 
     def test_overdispersion_auto_is_estimated_and_recorded(self):
         madc = self.madc_from_simulation(simulated_two_allele_markers(20, 4, markers=40, samples=60))
-        prefix = self.call(madc, "--ploidy", "4", "--overdispersion", "auto")
+        prefix = self.call_madc(madc, "--ploidy", "4", "--overdispersion", "auto")
         report = self.qc["overdispersion"]
         self.assertEqual(report["requested"], "auto")
         self.assertIn(report["used"], (16, 18, 20, 25))
@@ -1285,10 +1285,10 @@ class CommandBehaviourTests(CommandTestCase):
         self.assertIn(f"overdispersion {report['used']:g}, estimated from the read counts", model_line)
 
         # The estimate is the default.
-        self.call(madc, "--ploidy", "4")
+        self.call_madc(madc, "--ploidy", "4")
         self.assertEqual(self.qc["overdispersion"]["used"], report["used"])
 
-        self.call(madc, "--ploidy", "4", "--overdispersion", "30")
+        self.call_madc(madc, "--ploidy", "4", "--overdispersion", "30")
         self.assertEqual(self.qc["overdispersion"], {"requested": 30.0, "used": 30.0})
 
     def test_selfing_rate_favours_homozygous_calls(self):
@@ -1302,7 +1302,7 @@ class CommandBehaviourTests(CommandTestCase):
         )
         calls = {}
         for selfing_rate in ("0", "0.999"):
-            prefix = self.call(madc, "--overdispersion", "9", "--min-gq", "0", "--selfing-rate", selfing_rate)
+            prefix = self.call_madc(madc, "--overdispersion", "9", "--min-gq", "0", "--selfing-rate", selfing_rate)
             header, _, (record,) = self.vcf(prefix, "target")
             calls[selfing_rate] = record["samples"][-1]
         self.assertEqual(calls["0"]["GT"], "0/1")
@@ -1315,7 +1315,7 @@ class CommandBehaviourTests(CommandTestCase):
         madc = self.madc_from_simulation(table)
         ploidy_file = self.dir / "ploidy.tsv"
         ploidy_file.write_text("s00\t2\ns01\t2\n")
-        prefix = self.call(madc, "--ploidy", "4", "--ploidy-file", ploidy_file, "--prior", "norm",
+        prefix = self.call_madc(madc, "--ploidy", "4", "--ploidy-file", ploidy_file, "--prior", "norm",
                            "--overdispersion", "40")
         header, _, records = self.vcf(prefix, "target")
         self.assertTrue(any("normal-shaped prior over dosages" in line for line in header))
@@ -1330,7 +1330,7 @@ class CommandBehaviourTests(CommandTestCase):
         table, _ = simulated_group_markers(groups=3, samples_per_group=20, markers=120)
         madc = self.madc_from_simulation(table)
         options = ["--ploidy", "4", "--overdispersion", "50", "--background-rate", "0.001", "--min-dp", "0"]
-        prefix = self.call(madc, "--prior", "structure", *options)
+        prefix = self.call_madc(madc, "--prior", "structure", *options)
         report = self.qc["structure_prior"]
         self.assertIn(report["neighbours_per_sample"], (10, 20))
         self.assertEqual(report["markers_compared"], 120)
@@ -1357,12 +1357,12 @@ class CommandBehaviourTests(CommandTestCase):
     def test_structure_prior_without_structure_is_the_hwe_prior(self):
         madc = self.madc_from_simulation(simulated_two_allele_markers(50, 4, markers=120, samples=40))
         options = ["--ploidy", "4", "--overdispersion", "50", "--background-rate", "0.001"]
-        prefix = self.call(madc, "--prior", "structure", *options)
+        prefix = self.call_madc(madc, "--prior", "structure", *options)
         self.assertEqual(self.qc["structure_prior"]["neighbours_per_sample"], 0)
         self.assertIn("no better than the whole table", self.qc["structure_prior"]["reason_none_used"])
         self.assertIn("uses Hardy-Weinberg proportions for the whole table", self.stderr)
         structure_records = self.vcf(prefix, "target")[2]
-        hwe_prefix = self.call(madc, "--prior", "hwe", *options)
+        hwe_prefix = self.call_madc(madc, "--prior", "hwe", *options)
         self.assertEqual(self.qc["structure_prior"], {})
         self.assertEqual(structure_records, self.vcf(hwe_prefix, "target")[2])
 
@@ -1384,7 +1384,7 @@ class CommandBehaviourTests(CommandTestCase):
         madc = self.write_madc(
             [("M1", "Ref", REF_TAG, [30, 15, 0]), ("M1", "Alt", ALT_TAG, [0, 16, 28])], ["s1", "s2", "s3"]
         )
-        self.call(madc)
+        self.call_madc(madc)
         report = self.qc["overdispersion"]
         self.assertEqual((report["requested"], report["estimate"], report["used"]), ("auto", None, 9.0))
         self.assertEqual(report["cells_with_reads"], 3)
@@ -1393,7 +1393,7 @@ class CommandBehaviourTests(CommandTestCase):
     def test_read_model_is_estimated_by_default_and_recorded(self):
         table = simulated_two_allele_markers(40, 4, markers=40, samples=60, background_rate=0.005)
         madc = self.madc_from_simulation(table)
-        prefix = self.call(madc, "--ploidy", "4")
+        prefix = self.call_madc(madc, "--ploidy", "4")
         self.assertEqual(self.qc["parameters"]["background_rate"], "auto")
         self.assertEqual(self.qc["parameters"]["contamination_rate"], 0.0)
         background = self.qc["background_rate"]
@@ -1404,14 +1404,14 @@ class CommandBehaviourTests(CommandTestCase):
         model_line = next(line for line in self.vcf(prefix, "target")[0] if line.startswith("##madcatsModel="))
         self.assertIn("background-read rate 0.005, estimated from the read counts", model_line)
 
-        self.call(madc, "--ploidy", "4", "--background-rate", "0.01", "--overdispersion", "25")
+        self.call_madc(madc, "--ploidy", "4", "--background-rate", "0.01", "--overdispersion", "25")
         self.assertEqual(self.qc["background_rate"], {"requested": 0.01, "used": 0.01})
         self.assertEqual(self.qc["overdispersion"], {"requested": 25.0, "used": 25.0})
 
     def test_polyrad_settings_reproduce_polyrad_genotypes(self):
         # The first locus of the polyRAD reference values has two alleles, so its dosages can
         # be read off the target VCF.  Sample ploidies are 2, 3, 4 and 6.
-        fixture = load_fixture()
+        fixture = load_polyrad_fixture()
         columns = fixture["locus_columns"][1]
         depths = [[row[column] for column in columns] for row in fixture["depth"]]
         madc = self.write_madc(
@@ -1425,7 +1425,7 @@ class CommandBehaviourTests(CommandTestCase):
         ploidy_file.write_text(
             "".join(f"{name}\t{ploidy}\n" for name, ploidy in zip(fixture["samples"], fixture["ploidy"]))
         )
-        prefix = self.call(
+        prefix = self.call_madc(
             madc, "--ploidy-file", ploidy_file, "--prior", "hwe", "--overdispersion", "9", "--contamination-rate",
             "0.001", "--background-rate", "0", "--tol", "1e-10", "--max-iterations", "1000", "--min-dp", "0",
             "--min-gq", "0",
@@ -1446,7 +1446,7 @@ class CommandBehaviourTests(CommandTestCase):
         biased = simulated_two_allele_markers(60, 4, markers=3, samples=60, bias=0.5, seed=8)
         unbiased = simulated_two_allele_markers(60, 4, markers=3, samples=60, seed=9)
         madc = self.madc_from_simulation(biased + unbiased)
-        prefix = self.call(madc, "--ploidy", "4", "--allele-bias", "fit", "--overdispersion", "60",
+        prefix = self.call_madc(madc, "--ploidy", "4", "--allele-bias", "fit", "--overdispersion", "60",
                            "--background-rate", "0.001", "--vcf", "target", "haplotype")
         header, _, records = self.vcf(prefix, "target")
         self.assertTrue(any(line.startswith("##INFO=<ID=BIAS,") for line in header))
@@ -1475,15 +1475,15 @@ class CommandBehaviourTests(CommandTestCase):
         self.assertFalse(any("ID=BIAS" in line for line in haplotype_header))
         self.assertFalse(any("BIAS=" in record["INFO"] for record in haplotype_records))
 
-        self.call(madc, "--ploidy", "4", "--overdispersion", "60", "--background-rate", "0.001")
+        self.call_madc(madc, "--ploidy", "4", "--overdispersion", "60", "--background-rate", "0.001")
         self.assertEqual(self.qc["allele_bias"], {})
         self.assertFalse(Path(str(self.dir / "calls") + ".bias.csv").exists() and self.qc["outputs"]["bias_table"])
 
     def test_overdispersion_auto_falls_back_for_inbred_samples(self):
         table = simulated_two_allele_markers(20, 2, markers=30, samples=60, genotypes="inbred")
-        prefix = self.call(self.madc_from_simulation(table), "--overdispersion", "auto")
+        prefix = self.call_madc(self.madc_from_simulation(table), "--overdispersion", "auto")
         report = self.qc["overdispersion"]
-        self.assertEqual((report["at_limit"], report["used"]), ("lowest", call.DEFAULT_OVERDISPERSION))
+        self.assertEqual((report["at_limit"], report["used"]), ("lowest", call.FALLBACK_OVERDISPERSION))
         self.assertIn("no sample is heterozygous", self.stderr)
         model_line = next(line for line in self.vcf(prefix, "target")[0] if line.startswith("##madcatsModel="))
         # The overdispersion is the fallback value; the background-read rate was still estimated.

@@ -48,7 +48,7 @@ The module is laid out in the order a read travels. Each section opens with a ba
 the MADC helpers it shares with `validate` from `madcats`, so `build_parser` imports it when the
 parser is built rather than at the top of `madcats.py`.
 
-`madcats_call.py` is imported the same way. It opens with the genotype model (`call_marker` and the
+`madcats_call.py` is imported the same way. It opens with the genotype model (`call_record` and the
 functions it is built from, adapted from polyRAD), then the step from per-allele posteriors to one
 genotype (`correct_dosages_to_ploidy`), input (`read_count_table`, `read_ploidy_table`), what each
 VCF type counts (`resolve_target`, `RowReading`, `process_marker`), VCF text (`format_record`,
