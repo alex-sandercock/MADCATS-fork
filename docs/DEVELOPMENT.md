@@ -1779,10 +1779,34 @@ tetraploid cross has (two copies in each parent leave 1 progeny in 36 without
 it); it differs from the Ref tag at five bases and matches a copy 10 kb away
 better.
 
+A haplotype-resolved reference. The assembly the alfalfa panel was designed
+on has four copies of every chromosome, and the panel used one set of them.
+What the filter does when it is given more than one set was measured with
+another tetraploid cultivar whose haplotypes are in the INSDC archives
+(RegenSY; haplotype 3, GCA_054855475, and haplotype 4, GCA_054883285):
+chromosomes 1 to 3 of one haplotype as the genome, then of both, and the
+3,378 rows of the larger family at the 1,193 markers designed on those
+chromosomes.
+
+| Genome, run | Markers placed at one site | Ref tag with several equal-best sites | Rows `on_target` | `ambiguous` | `paralog` | RefMatch and AltMatch rows dropped |
+|---|---|---|---|---|---|---|
+| One haplotype, `ignore` | 1,077 | 27 | 2,921 | 115 | 71 | 114 of 992 |
+| One haplotype, positions | 1,103 | 16 | 2,954 | 103 | 94 | 115 of 992 |
+| Two haplotypes, `ignore` | 648 | 518 | 1,372 | 1,565 | 361 | 655 of 992 |
+| Two haplotypes, positions | 1,148 | 29 | 1,171 | 1,490 | 670 | 637 of 992 |
+
+With the second haplotype in the genome two thirds of the RefMatch and
+AltMatch rows are dropped where one in nine was, and 1,271 to 1,523 Ref and
+Alt rows are kept only because canonical rows always are. A row that is the
+other haplotype's allele matches that haplotype better and is labelled
+`paralog`; one that both haplotypes carry is `ambiguous`. CloneID positions
+place the markers (1,148 at one site against 648) and do not help the rows.
+A polyploid or haplotype-resolved assembly has to be cut down to one set of
+chromosomes before it is given to the filter.
+
 Not covered: the design genome; FASTQs of this panel, and so a MADC from
-`generate` (no public alfalfa DArTag reads were found); planted copies in
-this genome; and a haplotype-resolved reference, which has a copy of every
-tag on each haplotype.
+`generate` (no public alfalfa DArTag reads were found); and planted copies in
+this genome.
 
 ## Genotype calling (`call`, unreleased)
 

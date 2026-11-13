@@ -87,7 +87,11 @@ the short-read preset in one part, with `-I` above the genome size:
 than `-I` (8 Gb by default) into parts, and mappy searches only the first part, so the command
 refuses a multi-part index rather than miss the rest of the genome. An index the command builds
 itself is always one part. On the 2.4 Gb lettuce genome indexing took 50 s and 10.6 GB of memory,
-and the index file is 5.7 GB.
+and the index file is 5.7 GB; on a 0.8 Gb alfalfa genome, about 40 s and 5.2 GB, with a 2.0 GB file.
+
+The genome should hold each locus once. If the assembly is haplotype-resolved, or carries every
+copy of each chromosome of an autopolyploid, index one set of chromosomes only (see
+[Limitations](#limitations)).
 
 ## Options
 
@@ -250,10 +254,18 @@ It kept 113,667 rows, with 35.7% of the reads. See the
 - An allele of the marker that is as near a copy as it is to its own site is `ambiguous`. With
   copies planted one or two bases from the Ref tag, 8 of 349 rows of the markers themselves were
   lost this way; with copies that differ more, none of 515.
-- In a polyploid whose reference carries every subgenome or haplotype, a tag has a copy on each,
-  and those copies are treated as any other: reads of a diverged copy are labelled `paralog`, and
-  an identical copy makes the marker's rows `ambiguous`. This has not been measured on a
-  polyploid panel.
+- Give the filter one set of chromosomes. In a reference that carries every haplotype (or, in an
+  autopolyploid, every copy of each chromosome), a tag has a copy on each, and those copies are
+  treated as any other: an allele that sits on another haplotype is labelled `paralog`, and one
+  that two haplotypes share makes the rows `ambiguous`. On alfalfa, with three chromosomes of
+  one haplotype as the genome the filter dropped 115 of 992 RefMatch and AltMatch rows; with a
+  second haplotype of the same cultivar added it dropped 637, and 45% of the reads were on
+  `ambiguous` rows. CloneID positions do not prevent this. Cut such an assembly down to one
+  haplotype (for a panel designed on one, that one) before indexing it.
+- On a genome of another cultivar than the panel's, some Ref tags do not match their own site
+  best. With `--clone-positions ignore` on such a genome for alfalfa, 0.5 to 0.9% of the markers
+  were placed in another copy and 1% (81-base tags) to 7% (54-base tags) were left unplaced,
+  with all their rows kept.
 
 ## How It Was Checked
 
