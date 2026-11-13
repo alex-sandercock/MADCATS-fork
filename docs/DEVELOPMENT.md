@@ -2287,7 +2287,7 @@ progeny and off-types apart:
 
 A family prior costs 3 to 11 points on the samples that are not of the
 family, because it leaves them only the family's dosage classes, and gains
-0 to 2.5 points on those that are.
+at most 2.5 points on those that are.
 
 **Priors on haplotype records.** Neither polyRAD's paper nor its package
 gives accuracy figures for multi-allele (haplotype) calls: the paper scores
@@ -2325,12 +2325,12 @@ of every allele is right, without filters:
 - `norm` is never below `hwe` and gains at most 1.7 points. It takes two to
   five times as long, and 2 and 11 of the 300 records of the two low-depth
   tetraploid tables reached the iteration limit.
-- `uniform` is the lowest on every table, by 1 to 6 points.
+- `uniform` is the lowest on every table, by up to 6 points.
 
 With the default filter (`--min-marginal-posterior 0.9`), 94 to 99% of the
 genotypes kept are right under each of `hwe`, `norm` and `structure`. The
 share kept at this overdispersion is 4 to 37% in tetraploids and 74 to 83% in
-diploids, and is 2 to 8 points higher with `structure` than with `hwe` where
+diploids, and is 3 to 8 points higher with `structure` than with `hwe` where
 there are groups or families.
 
 Not covered: read counts from other simulators, real haplotype data with

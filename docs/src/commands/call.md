@@ -112,7 +112,7 @@ All four priors apply to every VCF type. For the haplotype VCF, on simulated mic
 - `structure` was never below `hwe` and gained 1 to 4 points in tetraploids with groups or
   families.
 - `norm` was never below `hwe`, gained at most 1.7 points, and took two to five times as long.
-- `uniform` was the lowest throughout, by 1 to 6 points.
+- `uniform` was the lowest throughout, by up to 6 points.
 - With the default `--min-marginal-posterior`, 94 to 99% of the genotypes kept were right under
   `hwe`, `norm` and `structure` alike.
 
