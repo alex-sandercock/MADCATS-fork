@@ -514,7 +514,8 @@ class ReadModelEstimateTests(unittest.TestCase):
                 self.assertIn(estimate.value, (16, 18, 20, 25))
                 self.assertIsNone(estimate.at_limit)
                 self.assertEqual(estimate.markers_used, 40)
-                self.assertEqual(max(estimate.log_likelihood_by_value, key=estimate.log_likelihood_by_value.get), estimate.value)
+                most_likely = max(estimate.log_likelihood_by_value, key=estimate.log_likelihood_by_value.get)
+                self.assertEqual(most_likely, estimate.value)
 
     def test_inbred_samples_end_at_the_lowest_value(self):
         # Without heterozygotes the counts say nothing about scatter, and the
@@ -689,7 +690,8 @@ class StructurePriorTests(unittest.TestCase):
         few_samples = call.find_neighbours([depths[:10] for depths in self.table], [4] * 10, self.settings)
         self.assertEqual((few_samples.neighbours_per_sample, few_samples.reason), (0, "fewer than 20 samples"))
         few_markers = call.find_neighbours(self.table[:30], self.ploidies, self.settings)
-        self.assertEqual((few_markers.neighbours_per_sample, few_markers.reason), (0, "fewer than 100 markers with reads"))
+        self.assertEqual(few_markers.neighbours_per_sample, 0)
+        self.assertEqual(few_markers.reason, "fewer than 100 markers with reads")
         self.assertEqual(few_markers.markers_used, 30)
 
     def test_a_sample_s_prior_follows_its_neighbours(self):
@@ -1249,8 +1251,8 @@ class HaplotypeVcfTests(CommandTestCase):
             ("M1", "RefMatch_1", third, [22, 18, 30, 9, 0]),
             ("M1", "RefMatch_2", fourth, [19, 0, 0, 11, 58]),
         ]
-        prefix = self.call_madc(self.write_madc(rows, ["s1", "s2", "s3", "s4", "s5"]), "--vcf", "haplotype", "--ploidy", "6",
-                           "--min-marginal-posterior", "0")
+        madc = self.write_madc(rows, ["s1", "s2", "s3", "s4", "s5"])
+        prefix = self.call_madc(madc, "--vcf", "haplotype", "--ploidy", "6", "--min-marginal-posterior", "0")
         (record,) = self.vcf(prefix, "haplotype")[2]
         for sample in record["samples"]:
             alleles = sample["GT"].split("/")

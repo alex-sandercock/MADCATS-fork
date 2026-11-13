@@ -16,12 +16,45 @@ requested type:
 Coordinates are marker-local: CHROM is the marker (CloneID) and POS is a
 1-based position on its Ref tag.
 
-The statistical model is adapted from polyRAD (Clark, Lipka and Sacks 2019,
-G3 9:663-673; https://github.com/lvclark/polyRAD, GPL >= 2).  The ``norm``
-prior is the one of updog (Gerard and Ferrao 2020, Bioinformatics
-36:1795-1800; https://github.com/dcgerard/updog, GPL >= 3).  In a record,
-each allele is considered on its own against all the other alleles together,
-which turns a multiallelic record into one two-outcome problem per allele:
+The statistical model is adapted from two R packages.  Each function below
+that follows one of them names the function it follows, and says where it
+differs.
+
+polyRAD 2.0.1 (GPL >= 2; https://github.com/lvclark/polyRAD).  Clark LV,
+    Lipka AE, Sacks EJ (2019) polyRAD: genotype calling with uncertainty from
+    sequencing data in polyploids and diploids.  G3 9(3):663-673.
+    doi:10.1534/g3.118.200913.
+    From it: the beta-binomial likelihood of each allele against the rest of
+    the record with its contamination term, the Hardy-Weinberg prior and its
+    selfing adjustment (after de Silva HN, Hall AJ, Rikkerink E, McNeilage
+    MA, Fraser LG (2005) Heredity 95:327-334, doi:10.1038/sj.hdy.6800728),
+    the iteration of the allele frequencies, the marginal posteriors, the
+    correction of dosages to the ploidy, and the form of a prior with one
+    allele frequency per sample.
+updog 2.1.7 (GPL >= 3; https://github.com/dcgerard/updog).  Gerard D, Ferrão
+    LFV, Garcia AAF, Stephens M (2018) Genotyping polyploids from messy
+    sequencing data.  Genetics 210(3):789-807.
+    doi:10.1534/genetics.118.301468.  Gerard D, Ferrão LFV (2020) Priors for
+    genotyping polyploids.  Bioinformatics 36(6):1795-1800.
+    doi:10.1093/bioinformatics/btz852.
+    From it: the allelic bias with its prior and starting values, the form
+    of the term for reads that show the wrong allele, the ``norm`` prior with
+    its limits, and the free-weights prior (updog's ``flex``).
+
+MADCATS's own, with no published counterpart: the estimate of the
+overdispersion and of one background-read rate for the whole table
+(``estimate_overdispersion``, ``estimate_read_model``) and its use of the
+free-weights prior, the order of bias before background reads, the search for
+the allelic bias (``fit_allele_bias``), the fit of the ``norm`` prior by
+Newton's method and its fit per ploidy, the neighbour-based ``structure``
+prior (``find_neighbours``), the exact search for dosages that sum to the
+ploidy as a check on polyRAD's rule, and the VCF fields (GQ, GP, PL, MPC).
+The numerical agreement with both packages is checked by tests/test_call.py
+against values stored in tests/fixtures/.
+
+In a record, each allele is considered on its own against all the other
+alleles together, which turns a multiallelic record into one two-outcome
+problem per allele:
 
 1. Likelihood.  For a sample of ploidy P, an allele can be present in
    0, 1, ..., P copies (its *dosage*).  The probability of the observed number
@@ -64,8 +97,8 @@ Likelihoods are kept as logarithms and only normalised posteriors are
 exponentiated, so a dosage that the reads make very improbable keeps a
 usable value at any read depth.
 
-Reading map: the model (``expected_read_fraction``, ``allele_log_likelihoods``,
-``hwe_prior``, ``normal_prior``, ``fit_normal_prior``, ``dosage_posterior``,
+Reading map: the model (``expected_read_fraction``, ``dosage_shapes``,
+``log_likelihoods_for_counts``, ``hwe_prior``, ``normal_prior``, ``fit_normal_prior``, ``dosage_posterior``,
 ``call_record``, ``fit_allele_bias``); from marginal posteriors to one
 genotype (``correct_dosages_to_ploidy``, ``best_dosages_summing_to_ploidy``);
 the estimate of the overdispersion and the background-read rate
@@ -168,11 +201,14 @@ class ModelSettings:
     fit_allele_bias: estimate an allelic bias for every record with two
         alleles (see ``fit_allele_bias``).  Without it both alleles are taken
         to be read equally well.
-    tolerance: the ``hwe`` iteration stops once the mean absolute change in
-        the marker's allele frequencies is at or below this.
-    max_iterations: upper limit on ``hwe`` iterations.  The ``structure``
-        prior has two stages (``hwe`` passes, then passes with the
-        neighbours), and each has this tolerance and this limit.
+    tolerance: the passes of a record stop once the change they watch is at
+        or below this: the mean absolute change in the record's allele
+        frequencies (``hwe``), also the largest change in any prior
+        probability (``norm``), or the mean absolute change in the samples'
+        own frequencies (``structure`` with neighbours).
+    max_iterations: upper limit on the passes.  The ``structure`` prior has
+        two stages (``hwe`` passes, then passes with the neighbours), and
+        each has this tolerance and this limit.
     neighbours: with the ``structure`` prior, for each sample the indices of
         the samples most like it (from ``find_neighbours``).  A sample's
         prior is then Hardy-Weinberg at the allele frequency among those
@@ -219,9 +255,10 @@ class RecordCall:
 
     ``log_likelihoods`` and ``posteriors`` are indexed
     ``[sample][allele][dosage]``, with dosage running from 0 to the sample's
-    ploidy.  ``allele_frequencies`` are the final estimates; the likelihoods
-    and posteriors were computed from the estimates of the round before, which
-    differ from the final ones by ``final_change`` on average.
+    ploidy.  ``allele_frequencies`` are the final estimates; the posteriors
+    were computed from the estimates of the pass before.  ``final_change`` is
+    the last value of the change the passes stop on (see
+    ``ModelSettings.tolerance``).
 
     ``priors`` holds the prior the posteriors were computed with, as
     ``[group][allele][dosage]``, and ``prior_groups`` each sample's group:
@@ -271,8 +308,11 @@ def minimum_allele_frequency(sample_count: int) -> float:
     """The smallest allele frequency the likelihood is given.
 
     An estimated frequency of exactly 0 or 1 would make the contamination
-    term vanish for that allele.  polyRAD replaces 0 with one allele copy in
-    a diploid population of this many samples, and 1 with its complement.
+    term vanish for that allele.  polyRAD (``AddGenotypeLikelihood``) uses
+    ``1 / nTaxa / max(ploidies)``, where the ploidies are the locus ploidies
+    it is given as ``possiblePloidies``; with ``list(2)``, as in the stored
+    comparisons, that is the 1 / (2 * samples) used here, whatever the
+    samples' own ploidy.
     """
     return 1.0 / (2.0 * sample_count)
 
@@ -350,7 +390,8 @@ def dosage_shapes(
 ) -> List[DosageShape]:
     """The beta-binomial of every dosage (0 to ``ploidy``) of one allele.
 
-    The shape parameters are ``fraction * overdispersion`` and
+    This and ``log_likelihoods_for_counts`` are the likelihood of polyRAD's
+    ``AddGenotypeLikelihood``, kept as logarithms.  The shape parameters are ``fraction * overdispersion`` and
     ``(1 - fraction) * overdispersion``, where ``fraction`` is the expected
     read fraction of the dosage.  They are the same for every sample of the
     ploidy, so they are worked out once and not per sample.
@@ -427,7 +468,9 @@ def allele_log_likelihoods(
 
     ``allele_depth`` reads out of ``record_depth`` showed the allele.  The
     likelihood is the beta-binomial probability of that count (see
-    ``dosage_shapes``).
+    ``dosage_shapes``).  This is the likelihood written for one sample; the
+    calling code uses the two functions it is made of, so that samples of a
+    ploidy share their work.
     """
     if record_depth == 0:
         return [0.0] * (ploidy + 1)
@@ -455,6 +498,7 @@ def gamete_dosage_probabilities(parent_dosage: int, ploidy: int) -> List[float]:
     The gamete receives half of the parent's chromosome copies, drawn without
     replacement from the ``parent_dosage`` copies that carry the allele and
     the rest that do not (polysomic inheritance without double reduction).
+    The values are those of polyRAD's ``.gameteProb``, from the closed form.
     """
     gamete_size = ploidy // 2
     return [
@@ -488,7 +532,8 @@ def _selfing_system(ploidy: int, selfing_rate: float) -> Tuple[Tuple[float, ...]
 
     ``S[offspring][parent]`` is the probability that self-fertilising a
     parent of one dosage gives an offspring of another: the offspring's
-    dosage is the sum of two gametes of the same parent.
+    dosage is the sum of two gametes of the same parent.  ``S`` is polyRAD's
+    ``.selfmat``.
     """
     size = ploidy + 1
     selfed = [[0.0] * size for _ in range(size)]
@@ -587,6 +632,8 @@ def _golden_section_maximum(function, low: float, high: float, tolerance: float 
 def _normal_prior_newton_fit(shares: Sequence[float], ploidy: int, mean: float, standard_deviation: float):
     """Fit the normal-shaped prior without limits on its parameters, by Newton's method.
 
+    The quantity maximised is updog's (``obj_for_weighted_lnorm``); updog
+    maximises it with L-BFGS-B, and this method is MADCATS's own.
     The prior is written as ``log probability = a * dosage + b * dosage**2 -
     constant``, with ``a = mean / sd**2`` and ``b = -1 / (2 * sd**2)``.  In
     ``a`` and ``b`` the weighted log prior has a single peak, reached where
@@ -732,7 +779,7 @@ def dosage_posterior(
 
 
 def posterior_mean_dosage(posterior: Sequence[float]) -> float:
-    """Expected number of copies of the allele."""
+    """Expected number of copies of the allele (polyRAD's ``GetWeightedMeanGenotypes``, per sample)."""
     return sum(dosage * probability for dosage, probability in enumerate(posterior))
 
 
@@ -752,6 +799,8 @@ def expected_allele_share(posterior: Sequence[float], ploidy: int) -> float:
 def depth_ratio_frequencies(depths: Sequence[Sequence[int]]) -> Optional[List[float]]:
     """Starting allele frequencies: each allele's mean share of a sample's reads.
 
+    These are polyRAD's starting frequencies (the depth ratios averaged by
+    ``.alleleFreq``).
     ``depths`` is ``[sample][allele]``.  Samples with no reads at the marker
     are left out.  Returns None when no sample has a read.
     """
@@ -836,7 +885,8 @@ def _fitted_priors(
             if ploidy in previous_parameters:
                 start_mean, start_sd = previous_parameters[ploidy][allele]
             else:
-                # The first fit starts from the binomial's mean and spread.
+                # The first fit starts from the binomial's mean and spread, as updog's does
+                # (flexdog_full); the floor of 0.1 on the spread is added here.
                 start_mean = ploidy * frequency
                 start_sd = max(0.1, math.sqrt(ploidy * frequency * (1.0 - frequency)))
             mean, standard_deviation = fit_normal_prior(dosage_weights, ploidy, start_mean, start_sd)
@@ -875,7 +925,9 @@ def _neighbourhood_frequencies(
     return frequencies
 
 
-def _neighbour_priors(sample_frequencies: Sequence[Sequence[float]], ploidies: Sequence[int]) -> Dict[int, List[List[float]]]:
+def _neighbour_priors(
+    sample_frequencies: Sequence[Sequence[float]], ploidies: Sequence[int]
+) -> Dict[int, List[List[float]]]:
     """Hardy-Weinberg priors at each sample's own allele frequencies, as ``[sample][allele][dosage]``.
 
     This is the form of polyRAD's population-structure prior
@@ -977,6 +1029,11 @@ def _iterate_record(
     neighbours: Optional[Sequence[Sequence[int]]] = None,
 ) -> RecordCall:
     """Run the passes of ``call_record`` for the alleles in ``depths`` with fixed biases.
+
+    The passes are polyRAD's ``IterateHWE`` for one record, with a limit on
+    their number.  For the ``norm`` prior they are the two steps of an EM
+    iteration, as in updog, but stopped on the change in the frequencies and
+    the prior where updog stops on the change in the log-likelihood.
 
     Each pass computes the posteriors from the current priors, re-estimates
     the allele frequencies from them, and renews the priors: from the new
@@ -1159,6 +1216,11 @@ def fit_allele_bias(
     (``_iterate_record``), which also fits the allele frequency or the normal
     prior, and the log-likelihood of the counts is taken from that result.
 
+    The bias, its prior and the starting values are updog's (``flexdog``).
+    The search is MADCATS's own: updog runs its EM, which updates the bias,
+    the sequencing error and the overdispersion together, from each starting
+    value.
+
     The search has two stages.  The record is first called at each of
     updog's five starting values, each from scratch, so that a wrong first
     guess of the genotypes at one bias cannot carry over to another.  Every
@@ -1311,7 +1373,11 @@ def call_record(
 
 
 def most_probable_dosage(posterior: Sequence[float]) -> Optional[int]:
-    """The dosage with the highest posterior probability, or None when two tie for it."""
+    """The dosage with the highest posterior probability, or None when two tie for it.
+
+    polyRAD's ``BestGenos`` takes the first of tied dosages, and compares in
+    single precision, so that it also ties posteriors such as 0.4, 0.4, 0.2.
+    """
     highest = max(posterior)
     if sum(1 for probability in posterior if probability == highest) > 1:
         return None
@@ -1326,7 +1392,8 @@ def correct_dosages_to_ploidy(
     """Adjust the dosages of one sample's alleles until they add up to ``ploidy``.
 
     ``dosages`` holds each allele's most probable dosage and ``posteriors``
-    its dosage posterior.  This is polyRAD's ``CorrectGenos``: while the sum
+    its dosage posterior.  This is ``CorrectGenos`` of polyRAD 2.0 and later
+    (``GetProbableGenotypes(multiallelic = "correct")``): while the sum
     is short, add one copy to the allele for which doing so leaves the product
     of the posteriors of all the dosages highest; while it is over, remove one
     copy by the same rule.  One copy at a time is fast but not guaranteed to
@@ -1363,7 +1430,10 @@ def best_dosages_summing_to_ploidy(posteriors: Sequence[Sequence[float]], ploidy
     """The dosages that add up to ``ploidy`` with the highest product of marginal posteriors.
 
     It maximises the same quantity as ``correct_dosages_to_ploidy`` but over
-    every combination, so its result is never less probable.  The search goes
+    every combination, so its result is never less probable.  polyRAD had an
+    exhaustive search for the same quantity (``BestMultiGeno``, deprecated in
+    2.0); this one is a dynamic programme and is used only to count how often
+    polyRAD's rule falls short of it.  The search goes
     through the alleles in order, keeping for each number of copies used so
     far the best assignment that uses that many; the work grows with the
     number of alleles times the square of the ploidy.
@@ -1389,7 +1459,7 @@ def best_dosages_summing_to_ploidy(posteriors: Sequence[Sequence[float]], ploidy
 
 
 # ---------------------------------------------------------------------------
-# Estimating the overdispersion from the data
+# Estimating the read model from the data: overdispersion and background-read rate
 # ---------------------------------------------------------------------------
 
 # Values tried by ``estimate_overdispersion``.  Steps widen as the values grow, because
@@ -1399,6 +1469,7 @@ OVERDISPERSION_GRID = (2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 25, 30, 4
 # spacing through the table, so that it stays quick and the same table always gives the
 # same value.
 OVERDISPERSION_MAX_CELLS = 20000
+# However many samples there are, at least this many markers are used when the table has them.
 OVERDISPERSION_MIN_MARKERS = 20
 # With fewer sample-by-marker cells that have reads, the estimate would be mostly noise.
 OVERDISPERSION_MIN_CELLS = 100
@@ -1510,8 +1581,9 @@ def estimate_overdispersion(
 
     depths_by_marker: ``[marker][sample][allele]`` read counts of two alleles
         per marker (the reference-type and alternate-type rows).
-    settings: the model the counts are to be called with; its overdispersion
-        is ignored.
+    settings: the model the markers are called with while estimating; its
+        overdispersion is ignored.  The command passes the free-weights prior
+        whatever prior the run uses (``choose_read_model``).
     parallel_map: a function like ``map``, used to work on the markers; a
         process pool's ``map`` spreads them over its workers.
 
@@ -1522,7 +1594,8 @@ def estimate_overdispersion(
     value, so the search is repeated with the chosen value until the choice
     no longer changes, which usually takes two rounds.
 
-    This is a maximum-likelihood estimate.  polyRAD's ``TestOverdispersion``
+    This is a maximum-likelihood estimate and MADCATS's own; updog instead
+    fits an overdispersion for every marker.  polyRAD's ``TestOverdispersion``
     instead tests the read counts of samples that a rough genotype estimate
     assigns one allele copy.  That works in diploids, but in polyploids the
     rough estimate assigns the wrong dosage often enough that the counts look
@@ -1776,7 +1849,11 @@ def find_neighbours(
     """Find the samples most like each sample across markers, and how many of them to use.
 
     This is the one step of the ``structure`` prior that looks at the whole
-    table.  ``depths_by_marker`` is ``[marker][sample][allele]`` with two
+    table, and it is MADCATS's own.  polyRAD's population-structure prior
+    (``IteratePopStruct``) gets each sample's allele frequencies from a
+    principal component analysis of all markers and a regression on its
+    axes; here they come from the sample's neighbours.  The prior built from
+    them has polyRAD's form (``_neighbour_priors``).  ``depths_by_marker`` is ``[marker][sample][allele]`` with two
     alleles per marker (reference and alternate).
 
     Every marker is called with the ``hwe`` prior, which gives each sample an
@@ -2159,7 +2236,11 @@ def genotype_text(dosages: Optional[Sequence[int]], ploidy: int) -> str:
 
 
 def genotype_quality(posterior: Sequence[float], called_dosage: int) -> int:
-    """Phred-scaled probability that the called dosage is wrong, capped at 99."""
+    """Phred-scaled probability that the called dosage is wrong, capped at 99.
+
+    The VCF 4.3 definition of GQ, applied to the dosage posterior.  polyRAD's
+    VCF export writes no such field.
+    """
     chance_wrong = sum(probability for dosage, probability in enumerate(posterior) if dosage != called_dosage)
     if chance_wrong <= 0.0:
         return MAX_GENOTYPE_QUALITY
@@ -2167,7 +2248,7 @@ def genotype_quality(posterior: Sequence[float], called_dosage: int) -> int:
 
 
 def phred_scaled_likelihoods(log_likelihoods: Sequence[float]) -> List[int]:
-    """VCF PL values: each dosage's likelihood relative to the most likely one, Phred-scaled."""
+    """VCF PL values (VCF 4.3): each dosage's likelihood relative to the most likely one, Phred-scaled."""
     best = max(log_likelihoods)
     scaled = []
     for log_likelihood in log_likelihoods:
@@ -2973,7 +3054,8 @@ def run_call(args: argparse.Namespace) -> int:
         tolerance=args.tol,
         max_iterations=args.max_iterations,
     )
-    # One pool of worker processes serves the overdispersion estimate and the calling.
+    # One pool of worker processes serves the read-model estimate, the search for like
+    # samples and the calling.
     executor = concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) if args.jobs > 1 else None
 
     def parallel_map(function, items):
@@ -3005,8 +3087,9 @@ def run_call(args: argparse.Namespace) -> int:
             }
             if choice.neighbours_per_sample:
                 print(
-                    f"Structure prior: each sample's allele frequencies are taken from the {choice.neighbours_per_sample} samples "
-                    f"most like it (compared on {choice.markers_used:,} markers)",
+                    f"Structure prior: each sample's allele frequencies are taken from the "
+                    f"{choice.neighbours_per_sample} samples most like it "
+                    f"(compared on {choice.markers_used:,} markers)",
                     file=sys.stderr,
                 )
             else:
@@ -3141,8 +3224,9 @@ def add_call_command(subparsers) -> None:
             "Estimate each sample's genotype from the read counts in a MADC and write VCFs. --vcf chooses the "
             "record types: target (the designed variant of each marker; the default), all (targets plus other "
             "base substitutions in the tags) and haplotype (whole tag sequences as alleles). Each type goes to "
-            "its own file. Ploidy can differ between samples. The model is polyRAD's: a beta-binomial "
-            "likelihood of the read counts with a prior chosen by --prior. Coordinates are "
+            "its own file. Ploidy can differ between samples. The model is adapted from polyRAD (a "
+            "beta-binomial likelihood of the read counts, with a prior chosen by --prior), with updog's allelic "
+            "bias, read-error term and norm prior. Coordinates are "
             "marker-local: CHROM is the marker and POS a position on its Ref tag. Reads MADCs from generate, "
             "vendor DArT MADCs and HapApp fixed-allele-ID MADCs."
         ),
@@ -3158,7 +3242,10 @@ def add_call_command(subparsers) -> None:
     calling.add_argument(
         "--output-prefix",
         required=True,
-        help="path prefix of the outputs: PREFIX.targets.vcf, PREFIX.all.vcf, PREFIX.haplotypes.vcf and PREFIX.qc.json",
+        help=(
+            "path prefix of the outputs: PREFIX.targets.vcf, PREFIX.all.vcf, PREFIX.haplotypes.vcf with "
+            "PREFIX.haplotypes.alleles.csv, PREFIX.bias.csv when a bias is fitted, and PREFIX.qc.json"
+        ),
     )
     calling.add_argument(
         "--vcf",
