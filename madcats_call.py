@@ -1958,7 +1958,6 @@ VCF_HAPLOTYPE = "haplotype"
 VCF_TYPES = (VCF_TARGET, VCF_ALL, VCF_HAPLOTYPE)
 VCF_FILE_SUFFIX = {VCF_TARGET: ".targets.vcf", VCF_ALL: ".all.vcf", VCF_HAPLOTYPE: ".haplotypes.vcf"}
 
-READ_TOTAL_COLUMN = "readCountSum"
 REFERENCE_CATEGORIES = ("Ref", "RefMatch")
 ALTERNATE_CATEGORIES = ("Alt", "AltMatch")
 CONCRETE_BASES = frozenset("ACGT")
@@ -2013,9 +2012,6 @@ def read_count_table(path: Path) -> Tuple[List[str], Dict[str, List[MadcRow]], D
     header = [cell.strip() for cell in table[header_index]]
     allele_column, clone_column, sequence_column = madc_identity_columns(header, path)
     sample_start = madc_sample_start(header)
-    # Processed MADCs can carry a per-row read total between the sequence and the samples.
-    if header[sample_start : sample_start + 1] == [READ_TOTAL_COLUMN]:
-        sample_start += 1
     sample_names = header[sample_start:]
     if not sample_names or any(not name for name in sample_names):
         raise MadcError(f"MADC has no sample columns, or a sample column without a name: {path}")

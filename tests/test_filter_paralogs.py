@@ -519,6 +519,38 @@ class CountOverflowTests(unittest.TestCase):
             self.assertIn("signed 8-bit overflow", log.getvalue())
             self.assertTrue(summary["count_overflow"]["signed_8bit_signature"])
 
+    def test_a_failed_run_leaves_no_partial_files(self):
+        tag = "ACGT" * 20 + "A"
+        with tempfile.TemporaryDirectory() as temporary:
+            madc = Path(temporary) / "in.csv"
+            write_madc(madc, [
+                madc_row("Chr1_001040", "Ref", tag, [1, 2, 3]),
+                madc_row("Chr1_001040", "Alt", mutate(tag, 40, "C"), [1, "n/a", 3]),
+            ])
+            outputs = [Path(temporary) / name for name in ("out.csv", "labels.csv", "markers.csv")]
+            with self.assertRaises(mp.MadcError):
+                fp.filter_paralogs(madc, outputs[0], FakeAligner({"Chr1": "A" * 2000}, {}), outputs[1], outputs[2])
+            self.assertEqual([path.exists() for path in outputs], [False, False, False])
+
+    def test_per_row_read_total_is_not_a_sample(self):
+        # Processed MADCs carry a readCountSum column between the sequence and the samples.
+        tag = "ACGT" * 20 + "A"
+        with tempfile.TemporaryDirectory() as temporary:
+            madc = Path(temporary) / "processed.csv"
+            with madc.open("w", newline="") as handle:
+                writer = csv.writer(handle, lineterminator="\n")
+                writer.writerow(["AlleleID", "CloneID", "AlleleSequence", "readCountSum"] + SAMPLES)
+                writer.writerow(["Chr1_001040|Ref", "Chr1_001040", tag, "50", "10", "15", "25"])
+            parsed = mp.read_madc(madc)
+            self.assertEqual(parsed["samples"], SAMPLES)
+            self.assertEqual(parsed["records"][0]["counts"], [10, 15, 25])
+            aligner = FakeAligner({"Chr1": "A" * 2000}, {})
+            summary = fp.filter_paralogs(
+                madc, Path(temporary) / "out.csv", aligner, Path(temporary) / "l.csv", Path(temporary) / "m.csv"
+            )
+            self.assertEqual(summary["rows"]["input"], {"rows": 1, "reads": 50})
+            self.assertEqual(read_rows(Path(temporary) / "out.csv"), read_rows(madc))
+
 
 class CommandTests(unittest.TestCase):
     def test_missing_mappy_names_the_extra(self):
@@ -797,6 +829,23 @@ class ReviewCaseTests(unittest.TestCase):
             ))
         self.assertIn("in 2 parts", str(caught.exception))
         self.assertFalse(output.exists())
+        # The same file is refused when --genome names it.
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(mp.MadcError) as caught:
+            fp.run_filter_paralogs(mp.build_parser().parse_args(
+                ["filter-paralogs", "--madc", str(madc), "--genome", str(joined), "--output", str(output)]
+            ))
+        self.assertIn("in 2 parts", str(caught.exception))
+        self.assertFalse(output.exists())
+        # A one-part index given as --genome is loaded, and no copy is saved over --genome-index.
+        other = self.dir / "other.mmi"
+        with contextlib.redirect_stderr(io.StringIO()) as log:
+            fp.run_filter_paralogs(mp.build_parser().parse_args(
+                ["filter-paralogs", "--madc", str(madc), "--genome", str(parts[0]), "--genome-index", str(other),
+                 "--output", str(output)]
+            ))
+        self.assertIn("Loading index", log.getvalue())
+        self.assertFalse(other.exists())
+        self.assertTrue(output.exists())
 
     def test_label_change_between_assemblies_without_a_copy_change(self):
         # Both assemblies have the target and one other copy; only the other copy's sequence differs.  The

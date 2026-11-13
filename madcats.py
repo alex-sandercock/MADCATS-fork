@@ -3327,13 +3327,22 @@ def madc_identity_columns(header: Sequence[str], path: Path) -> Tuple[int, int, 
         raise MadcError(f"MADC is missing a required identifier column: {path}") from exc
 
 
+# Processed MADCs can carry a per-row read total between the sequence columns and the samples.
+READ_TOTAL_COLUMN = "readCountSum"
+
+
 def madc_sample_start(header: Sequence[str]) -> int:
-    """First per-sample column: after the statistics block, or after the sequence columns of a short layout."""
+    """First per-sample column: after the statistics block, or after the sequence columns of a
+    short layout, and after the per-row read total where there is one."""
     if "RatioAvgCountRefAvgCountSnp" in header:
-        return header.index("RatioAvgCountRefAvgCountSnp") + 1
-    if "ClusterConsensusSequence" in header:
-        return header.index("ClusterConsensusSequence") + 1
-    return header.index("AlleleSequence") + 1
+        start = header.index("RatioAvgCountRefAvgCountSnp") + 1
+    elif "ClusterConsensusSequence" in header:
+        start = header.index("ClusterConsensusSequence") + 1
+    else:
+        start = header.index("AlleleSequence") + 1
+    if [cell.strip() for cell in header[start : start + 1]] == [READ_TOTAL_COLUMN]:
+        start += 1
+    return start
 
 
 def madc_read_counts(cells: Sequence[str], path: Path) -> List[int]:

@@ -247,9 +247,12 @@ class GenomeAligner:
             raise MadcError(f"Genome index not found: {index} (pass --genome to build it)")
         if not source.exists():
             raise MadcError(f"Genome file not found: {source}")
+        # The file may be an index whichever option named it; an index is loaded, never rebuilt.
+        parts = _index_parts(source)
+        if parts is not None:
+            save = None
         if save is not None:
             save.parent.mkdir(parents=True, exist_ok=True)
-        parts = _index_parts(source) if source == index else None
         if parts is not None and len(parts) > 1:
             raise MadcError(
                 f"{source} is a minimap2 index in {len(parts)} parts ({sum(map(len, parts)):,} contigs), and mappy "
@@ -257,7 +260,7 @@ class GenomeAligner:
                 "Rebuild it as one part: give --genome and a new --genome-index path, or run minimap2 -x sr "
                 "with -I above the genome size"
             )
-        verb = "Loading index" if source == index else "Indexing genome"
+        verb = "Loading index" if parts is not None else "Indexing genome"
         print(f"{verb} {source}" + (f" (saving {save})" if save else ""), file=sys.stderr)
         aligner = mappy.Aligner(
             str(source), preset="sr", n_threads=threads, fn_idx_out=str(save) if save else None,
@@ -605,52 +608,58 @@ def filter_paralogs(
     totals = {"input": {"rows": 0, "reads": 0}, "output": {"rows": 0, "reads": 0}}
     output.parent.mkdir(parents=True, exist_ok=True)
     labels_path.parent.mkdir(parents=True, exist_ok=True)
-    with open_text(madc_path, "rt") as handle, open_text(output, "wt") as out_handle, labels_path.open(
-        "w", newline=""
-    ) as label_handle:
-        preamble, header, reader = _madc_stream(handle, madc_path)
-        writer = csv.writer(out_handle, lineterminator="\n")
-        label_writer = csv.writer(label_handle, lineterminator="\n")
-        label_writer.writerow(GENOME_LABEL_SIDECAR_COLUMNS)
-        if provenance and preamble and preamble[0] and preamble[0][0].startswith("* MADCATS"):
-            preamble[0] = [f"{preamble[0][0]} | {provenance}"] + preamble[0][1:]
-        writer.writerows(preamble)
-        header = list(header)
-        if label_index is not None:
-            header[label_index] = GENOME_LABEL_HEADER
-        writer.writerow(header)
-        sample_start = madc_sample_start(header)
-        for row in reader:
-            if len(row) < width or not row[allele_index].strip():
-                continue
-            allele_id = row[allele_index].strip()
-            clone = row[clone_index].strip()
-            sequence = row[sequence_index].strip().upper()
-            result = labels[(clone, sequence)]
-            category = allele_type(allele_id)
-            action = actions.get(result.label, "keep")
-            if action == "drop":
-                outcome = "protected" if category in ("Ref", "Alt") else "dropped"
-            else:
-                outcome = "flagged" if action == "flag" else "kept"
-            counts = madc_read_counts(row[sample_start:], madc_path)
-            overflow.add(clone, counts)
-            reads = sum(counts)
-            for bucket in (totals["input"], by_label[result.label], by_outcome[outcome], by_category[category][result.label]):
-                bucket["rows"] += 1
-                bucket["reads"] += reads
-            if outcome != "dropped":
-                if label_index is not None:
-                    row = list(row) + [""] * max(0, label_index + 1 - len(row))
-                    row[label_index] = result.label
-                writer.writerow(row)
-                totals["output"]["rows"] += 1
-                totals["output"]["reads"] += reads
-            off_hit = _format_site(result.off_target_hit) if result.off_target_hit is not None else "."
-            label_writer.writerow([
-                clone, allele_id, sequence, result.label, outcome, cell(result.target_score), result.target_from,
-                cell(result.off_target_score), result.off_target_sites, off_hit,
-            ])
+    try:
+        with open_text(madc_path, "rt") as handle, open_text(output, "wt") as out_handle, labels_path.open(
+            "w", newline=""
+        ) as label_handle:
+            preamble, header, reader = _madc_stream(handle, madc_path)
+            writer = csv.writer(out_handle, lineterminator="\n")
+            label_writer = csv.writer(label_handle, lineterminator="\n")
+            label_writer.writerow(GENOME_LABEL_SIDECAR_COLUMNS)
+            if provenance and preamble and preamble[0] and preamble[0][0].startswith("* MADCATS"):
+                preamble[0] = [f"{preamble[0][0]} | {provenance}"] + preamble[0][1:]
+            writer.writerows(preamble)
+            header = list(header)
+            if label_index is not None:
+                header[label_index] = GENOME_LABEL_HEADER
+            writer.writerow(header)
+            sample_start = madc_sample_start(header)
+            for row in reader:
+                if len(row) < width or not row[allele_index].strip():
+                    continue
+                allele_id = row[allele_index].strip()
+                clone = row[clone_index].strip()
+                sequence = row[sequence_index].strip().upper()
+                result = labels[(clone, sequence)]
+                category = allele_type(allele_id)
+                action = actions.get(result.label, "keep")
+                if action == "drop":
+                    outcome = "protected" if category in ("Ref", "Alt") else "dropped"
+                else:
+                    outcome = "flagged" if action == "flag" else "kept"
+                counts = madc_read_counts(row[sample_start:], madc_path)
+                overflow.add(clone, counts)
+                reads = sum(counts)
+                for bucket in (totals["input"], by_label[result.label], by_outcome[outcome], by_category[category][result.label]):
+                    bucket["rows"] += 1
+                    bucket["reads"] += reads
+                if outcome != "dropped":
+                    if label_index is not None:
+                        row = list(row) + [""] * max(0, label_index + 1 - len(row))
+                        row[label_index] = result.label
+                    writer.writerow(row)
+                    totals["output"]["rows"] += 1
+                    totals["output"]["reads"] += reads
+                off_hit = _format_site(result.off_target_hit) if result.off_target_hit is not None else "."
+                label_writer.writerow([
+                    clone, allele_id, sequence, result.label, outcome, cell(result.target_score), result.target_from,
+                    cell(result.off_target_score), result.off_target_sites, off_hit,
+                ])
+    except BaseException:
+        # A run that fails part of the way through leaves no partial files behind.
+        for partial in (output, labels_path, markers_path):
+            partial.unlink(missing_ok=True)
+        raise
 
     warning = overflow.warning(madc_path)
     if warning:
