@@ -48,8 +48,8 @@ Two other priors helped under particular conditions and not otherwise:
 
 | Your samples | Consider | Where it helped | Where it did not |
 |--------------|----------|-----------------|------------------|
-| Families (F1, half-sibs) | `--prior norm` | Simulated tetraploid F1 families: 1.2 points, and 1 to 6 points with a bias fitted. Two F1 populations at about 10 reads: error 0.186 against 0.200, and 0.385 against 0.409 | Alfalfa and potato families at high read depth: from 0.8 points below `hwe` to 0.2 above. One population: up to 0.7 below |
-| Subpopulations or families at 25 reads or fewer | `--prior structure` | Simulated tetraploids: 0.8 to 5.5 points at 8 reads, 0.5 to 2.5 at 25. Potato clones of ten families thinned to 10 and 25 reads: 0.9 and 0.7 points | The same potato clones at 300 reads: no gain. It cannot be combined with a fitted bias or a selfing rate |
+| Families (F1, half-sibs) | `--prior norm` | Simulated tetraploid F1 families at 20 to 60 reads, five draws: 1.0 point (0.6 to 1.5), and 2.5 with `--allele-bias auto` on a biased panel. With it `auto` kept no bias that was not there. Two F1 populations at about 10 reads: error 0.186 against 0.200, and 0.385 against 0.409 | Alfalfa and potato families at high read depth: from 0.8 points below `hwe` to 0.2 above. One population: up to 0.7 below |
+| Subpopulations at 60 reads or fewer, on a panel without bias | `--prior structure` | Simulated tetraploids: 0.8 to 5.5 points at 8 reads, 0.5 to 2.5 at 25, 0.6 at 20 to 60. Potato clones of ten families thinned to 10 and 25 reads: 0.9 and 0.7 points | The same potato clones at 300 reads: no gain. One F1 family: the same as `hwe`. It cannot be combined with a fitted bias or a selfing rate, and on a biased panel `norm` with `auto` was 1.5 points ahead of it |
 
 Three things to know before changing them:
 
@@ -61,9 +61,9 @@ Three things to know before changing them:
 - **The other priors and the bias cost time.** `norm` and `structure` take two to five times as
   long as `hwe`, and a fitted bias seven to eight times.
 - **The QC JSON says how a run with a bias went.** `allele_bias.records_called_with_the_bias` was
-  half to two thirds of the records on the potato data, 13 in 100 on diploid smelt and fewer than
-  2 in 100 on polyploids pooled from reads without bias. `allele_bias.at_search_limit` was 3 in
-  100 or fewer on every real data set tested, and every record on simulated inbred lines.
+  half to two thirds of the records on the potato data, 13 in 100 on diploid smelt and 3 in 100 or
+  fewer on polyploids pooled from reads without bias. `allele_bias.at_search_limit` was 3 in 100
+  or fewer on every real data set tested, and every record on simulated inbred lines.
 
 The measurements behind this section are in
 [Validation & Accuracy](../reference/validation.md#genotype-calling-call).
@@ -320,19 +320,21 @@ settings equal, the fitted bias and the genotypes match updog's.
 When to use it:
 
 - **Polyploids on an amplicon panel: `auto`.** It needs no knowledge of the panel. On potato it
-  raised agreement with a SNP array from 92.3% to 96.4%, where `fit` reached 96.6%; on polyploids
-  pooled from reads without bias it changed fewer than 2 records in 100 and cost 0.1 points or
-  less.
-- **A panel you know to be biased, at low depth: `fit`.** `auto` keeps a bias only where it is
-  clear, which takes depth. On simulated biased tetraploids it was 0.3 points behind `fit` at 150
-  reads and 1.8 behind at 25.
+  raised agreement with a SNP array from 92.3% to 96.4%, where `fit` reached 96.6%. On polyploids
+  pooled from reads without bias it stayed within 0.2 points of `off`, where `fit` lost 1 point
+  in tetraploids and 7 in hexaploids.
+- **A panel known to be biased, in hexaploids or at fewer than about 50 reads: `fit`.** `auto`
+  keeps a bias only where it is clear, which takes depth. Of what `fit` gained on simulated biased
+  tetraploids it kept 98% at 150 reads, 78% at 25, and 64% at 20 to 60 reads with smaller biases;
+  in hexaploids, 83% at 150 reads and 19% at 20 to 60.
 - **Diploids: neither.** A bias moved accuracy by −0.1 to +0.6 points.
 - **Inbred lines: neither.** A bias has nothing to correct in them. `fit` miscalled a quarter of
-  their genotypes on simulated tables. `auto` rejects their biases and warns. Give
-  `--selfing-rate`.
-- **Families: with `--prior norm`.** On simulated F1 families with bias `norm` was 1 to 6 points
-  ahead of `hwe` under `fit` or `auto`; on real alfalfa and potato families the two priors were
-  within 0.2 points.
+  their genotypes on simulated tables. `auto` rejects their biases, warns, and has the genotypes
+  of `off`. Give `--selfing-rate`.
+- **Families: with `--prior norm`.** On simulated F1 families without bias, `auto` with `hwe` kept
+  a bias at 2 markers in 100 and lost 0.7 points; with `norm` it kept none. With bias, `norm` was
+  2.5 points ahead of `hwe` under `auto` and 4.4 under `fit`. On real alfalfa and potato families
+  at high depth the two priors were within 0.2 points with a bias fitted.
 
 `auto` is not the default because it takes as long as `fit`, and because on diploid smelt it
 stayed 0.1 points under `off`.
@@ -413,15 +415,12 @@ base at another tile's variant, not an ambiguity code, that variant is also writ
 off-target record of this tile, with the same genotypes as the other tile's target record; and
 the tiles' haplotype records describe the same sequences. Count such a variant once downstream.
 
-On simulated microhaplotype tables (diploid and tetraploid, 8 to 150 reads) off-target records were
-called as accurately as target records, whether a substitution was on one haplotype or shared by
-two, and 96 to 99.8% of the off-target genotypes that passed the default filters were right. On
-real reads of 96 diploid delta smelt, 99.8% of the off-target genotypes that passed the default
-filters agreed with genotypes called from alignments of the same reads, against 99.6% at the
-targets.
-
 ## See Also
 
+- [Calling Genotypes from a MADC](../tutorials/genotype-calling.md): a walkthrough on the example
+  project
+- [Validation & Accuracy](../reference/validation.md#genotype-calling-call): what `call` was
+  checked against
 - [madcats generate](generate.md)
 - [madcats filter-paralogs](filter-paralogs.md)
 - [Output Formats](../reference/output-formats.md)

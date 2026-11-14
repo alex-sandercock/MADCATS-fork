@@ -193,6 +193,91 @@ tetraploid; one population, groups and families):
 These are simulations with one simulator; there is no published accuracy baseline for haplotype
 calls to compare with, and no real haplotype data with known genotypes has been tested.
 
+**Off-target records.** On simulated microhaplotype tables (diploid and tetraploid, 8 to 150
+reads) off-target records were called as accurately as target records, whether a substitution was
+on one haplotype or shared by two, and 96 to 99.8% of the off-target genotypes that passed the
+default filters were right. On real reads of 96 diploid delta smelt, 99.8% of the off-target
+genotypes that passed the default filters agreed with genotypes called from alignments of the
+same reads, against 99.6% at the targets.
+
+### Allelic Bias
+
+Share of dosages right with `--prior hwe`, with the rules of `auto` as released. Real data:
+
+| Data | `off` | `fit` | `auto` | Biases `auto` used |
+|------|-------|-------|--------|--------------------|
+| Potato, 85 tetraploid clones, against a SNP array | 92.3% | 96.6% | 96.4% | 785 of 1,544 |
+| Potato vendor MADC, tetraploids | 86.4% | 91.3% | 91.1% | 2,566 of 3,904, with the diploids |
+| Potato vendor MADC, diploids | 92.0% | 92.6% | 92.5% | |
+| Delta smelt (diploid), against alignment-based genotypes | 99.4% | 99.3% | 99.3% | 127 of 946 |
+| Tetraploids pooled from real diploid reads, 50 reads, three draws | 90.4% | 89.5% | 90.4% | 15 to 29 of 946 |
+| Hexaploids pooled from real diploid reads, 50 reads, three draws | 77.8% | 71.0% | 77.8% | 3 to 12 of 944 |
+
+Simulated tables, as the mean over five draws (four for updog's simulator):
+
+| Scenario | `off` | `fit` | `auto` | Biases `auto` used |
+|----------|-------|-------|--------|--------------------|
+| Tetraploids, random mating, no bias, 20 to 60 reads | 89.7% | 89.2% | 89.7% | none |
+| Tetraploids, random mating, biased, 20 to 60 reads | 83.9% | 88.7% | 87.0% | 24% |
+| Hexaploids, random mating, no bias, 20 to 60 reads | 75.0% | 73.3% | 75.0% | none |
+| Hexaploids, random mating, biased, 20 to 60 reads | 66.7% | 72.6% | 67.8% | 7% |
+| Tetraploid inbred lines, no bias | 97.3% | 73.7% | 97.3% | none |
+| updog's simulator: tetraploids, biased, 150 reads | 84.8% | 96.5% | 96.3% | 72% |
+| updog's simulator: tetraploids, biased, 25 reads | 76.1% | 84.7% | 82.8% | 35% |
+| updog's simulator: hexaploids, biased, 150 reads | 66.7% | 85.8% | 82.6% | 52% |
+| updog's simulator: diploids, biased, 150 reads | 99.6% | 100.0% | 100.0% | 75% |
+
+- **Where a bias is there, fitting it is worth 4 to 5 points in tetraploid potato** and up to 19
+  in simulated hexaploids. It brought `call` level with updog on biased polyploid data (within 0.7
+  points on seven tables from updog's simulator), where calling without it was 8 to 20 points
+  behind. Against the potato array, at the markers updog found biased the share rose from 80% to
+  95%. On the whole deposit of that study (703 clones, 1,862 markers, none selected) `fit` raised
+  the share from 82.8% to 87.5%, where the study's own updog genotypes have 87.2%.
+- **Where no bias is there, `auto` leaves the calls alone.** In one population and in inbred
+  lines it kept no bias in any draw, and its genotypes are those of `off`. `fit` lost 0.1 to 1.8
+  points in one population, 7 on hexaploids pooled from real reads and 24 on inbred lines.
+- **`auto` needs depth.** Of what `fit` gains it kept 97 to 100% at 150 reads in diploids and
+  tetraploids and 83% in hexaploids, 78% at 25 reads, and at 20 to 60 reads with smaller biases
+  54 to 68% in tetraploids and 19% in hexaploids.
+- **Inbred lines.** A bias changes only what a heterozygote shows. Under a prior that expects
+  heterozygotes, every fit ran to a limit of the search and homozygous samples passed for
+  heterozygous ones. `auto` rejects a bias at a limit; `fit` does not.
+- **Families and subpopulations without bias.** With `--prior hwe`, `auto` kept a bias at 2 to 4
+  markers in 100 and lost 0.6 to 0.7 points. With `--prior norm` it kept none in F1 families and
+  lost 0.1 points in subpopulations.
+- **Real diploid reads.** On 96 delta smelt `auto` and `fit` were 0.1 points under `off` at
+  targets and 0.3 at off-target SNPs.
+
+### Calibration
+
+How far the probability `call` gives its called genotypes lies above the share of them that are
+right, in points. Positive is over-confident. The probability is read from `GQ`; simulated
+figures are means over the draws.
+
+| Data | `off` | `auto` | `fit` |
+|------|-------|--------|-------|
+| Simulated tetraploids, random mating, no bias | −0.1 | −0.1 | +0.6 |
+| Simulated tetraploids, random mating, biased | +1.9 | −0.3 | +1.1 |
+| Simulated hexaploids, random mating, no bias | −0.5 | −0.5 | +4.0 |
+| Simulated hexaploids, random mating, biased | +4.6 | +3.7 | +5.0 |
+| Simulated tetraploid inbred lines | +0.4 | +0.4 | +14.4 |
+| updog's simulator: tetraploids, biased, 150 reads | +5.4 | −0.5 | +0.5 |
+| updog's simulator: hexaploids, biased, 150 reads | +10.8 | 0.0 | +2.2 |
+| updog's simulator: tetraploid F1, biased, `--prior hwe` | +8.6 | +11.1 | +14.7 |
+| Tetraploids pooled from real reads, three draws | +1.1 | +1.2 | +2.3 |
+| Hexaploids pooled from real reads, three draws | +0.8 | +0.8 | +8.3 |
+| Potato clones against the array | +4.8 | +2.3 | +2.5 |
+
+- Without a bias in the data, `off` and `auto` are within 1.2 points. `fit` is over-confident
+  by 4 to 8 points in hexaploids and 14 on inbred lines.
+- With a bias in the data, `off` is over-confident by up to 11 points, because a biased marker is
+  called wrongly and confidently. `auto` and `fit` are within 2.2 points at 150 reads.
+- A prior that does not fit the samples costs calibration whatever the bias setting: F1 families
+  under `--prior hwe` are over-confident by 9 to 15 points.
+- Against the potato array the gap is not all the caller's: the array and the reads also differ
+  for reasons a caller cannot see. A genotype with a `GQ` of 30 or more was wrong 6 to 7 times in
+  100 there.
+
 ### Overdispersion and Background Reads
 
 - In simulated diploids and tetraploids with 20 or more reads per sample both values were
