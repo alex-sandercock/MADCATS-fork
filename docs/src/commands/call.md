@@ -33,6 +33,32 @@ Coordinates are **marker-local**. `CHROM` is the marker (its CloneID) and `POS` 
 position on its Ref tag, so these files are not placed on a genome. Every marker is declared as a
 contig in the header, and a `##madcatsCoordinates` line says so.
 
+### Which settings to use
+
+The defaults suit one outbred population or a diversity panel, diploid or autopolyploid: the
+Hardy-Weinberg prior, an overdispersion and a background-read rate estimated from the table, and
+no allelic bias. Change them when one of these describes your samples:
+
+| Your samples | Use | What it changed |
+|--------------|-----|-----------------|
+| Polyploids on an amplicon panel such as DArTag | `--allele-bias auto` | 85 tetraploid potato clones: 92.3% to 96.5% of dosages matching a SNP array |
+| Families (F1, half-sibs) | `--prior norm`, and `--allele-bias auto` for polyploids | Simulated tetraploid F1 on a biased panel: 81.6% with the defaults, 93.8% with both |
+| Subpopulations or families at 25 reads or fewer | `--prior structure` | Simulated tetraploids: 0.8 to 5.5 points at 8 reads, 0.5 to 2.5 at 25 |
+| Inbred lines, doubled haploids, selfing species | `--selfing-rate 0.95` to `0.99`, and no bias | Simulated inbred tetraploids: 97.4% to 99.6–99.9% |
+
+Three things to know before changing them:
+
+- **A bias matters only where there are heterozygotes.** It changes the read fraction a
+  heterozygous genotype is expected to show, and nothing else. Diploids, with one heterozygous
+  class, moved by −0.1 to +0.6 points with it; tetraploid potato gained 4 to 5. Inbred lines gain
+  nothing and lose accuracy, with `fit` and `auto` alike (see [Allelic bias](#allelic-bias)).
+- **The other priors and the bias cost time.** `norm` and `structure` take two to five times as
+  long as `hwe`, and a fitted bias seven to eight times.
+- **The QC JSON says how a run with a bias went.** `allele_bias.records_called_with_the_bias` was
+  half to two thirds of the records on the potato data, 14 in 100 on diploid smelt and 3 in 100 on
+  polyploids pooled from reads without bias. `allele_bias.at_search_limit` was 3 in 100 or fewer
+  on every real data set tested, and every record on simulated inbred lines.
+
 ### The genotype model
 
 The model is adapted from [polyRAD](https://github.com/lvclark/polyRAD) (Clark, Lipka and Sacks
@@ -312,7 +338,8 @@ When to fit it, from read counts drawn with updog's and polyRAD's own simulators
 alfalfa populations, potato clones that also have SNP-array genotypes, delta smelt and polyploids
 pooled from smelt reads (the tables are in the development record):
 
-- If you do not know whether a panel is biased, use `auto`. Share of genotypes right with
+- If you do not know whether a panel is biased, use `auto`, unless the samples are inbred lines
+  (below). Share of genotypes right with
   `--prior hwe`:
 
   | Data | `off` | `fit` | `auto` |
@@ -329,8 +356,10 @@ pooled from smelt reads (the tables are in the development record):
   because of that time, and because on the smelt data it stays 0.1 points under `off`: there the
   loss comes with the read model that a run with a bias estimates, not with the biases used.
 
-- Use it with `--prior norm`. With `--prior hwe` it lost accuracy wherever the samples were not in
-  Hardy-Weinberg proportions (families, inbred lines).
+- For families, use it with `--prior norm`. With `--prior hwe`, `fit` lost up to 4 points on
+  simulated F1 families without bias, which `auto` avoided; on simulated F1 families with bias
+  `norm` was 1 to 6 points ahead of `hwe` under either setting. On the real alfalfa and potato
+  families the two priors were within 0.2 points.
 - On biased polyploid data it brought `call` level with updog (within 0.7 points of genotypes
   correct on seven updog-simulated tables), where calling without it was 8 to 20 points behind. On
   the alfalfa populations it raised agreement with published dosages from 90% to 92%.
@@ -343,10 +372,18 @@ pooled from smelt reads (the tables are in the development record):
 - On real diploid reads (96 delta smelt) it lowered agreement with alignment-based genotypes by
   0.15 points at targets and 0.3 at off-target SNPs.
 - On outbred tetraploid data without bias it cost up to 1.5 points.
-- Do not fit it for inbred lines. Without heterozygous samples a bias cannot be told from a shift
-  of every dosage, and 8 points were lost.
-- Check the result in hexaploids with widely scattered counts: on one such simulated table 10
-  points were lost, as updog lost them.
+- Do not fit it for inbred lines, with `fit` or with `auto`. A bias changes only what a
+  heterozygote shows, so there is nothing for it to correct, and under a prior that expects
+  heterozygotes the fit runs to the limit of the search, where homozygous samples pass for
+  heterozygous ones. On simulated inbred tetraploids every record's bias ended at the limit and
+  `auto` kept them all: 71.7% of dosages were right against 97.4% without a bias (90.3% against
+  98.6% with `--prior norm`). Give `--selfing-rate` instead: 99.6% at 0.95 and 99.9% at 0.99.
+  Samples that are half inbred are safe with `auto` (92.9% against 93.2% without a bias, where
+  `fit` had 90.7%).
+- Check the result in hexaploids with widely scattered counts. On one such simulated table
+  without bias `fit` lost 3.5 to 10 points, as updog lost them, and `auto` 1.9 to 3.2 although it
+  used no record's bias: the loss comes with the read model that a run with a bias estimates. On
+  hexaploids pooled from real reads `auto` lost nothing.
 
 ## Filters
 
