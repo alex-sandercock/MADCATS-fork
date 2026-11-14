@@ -7,41 +7,26 @@
 
 **Marker-Anchored Discovery and Counting of Alleles from Targeted Sequencing.**
 
-`madcats` is a command-line tool that turns targeted-sequencing FASTQs into MADC microhaplotype
-count tables. It counts the alleles a panel was designed for and finds additional ones in the reads.
-The output is a raw MADC table, which goes through HapApp before dosage calling and VCF conversion,
-or straight to `madcats call` for genotypes and VCFs.
+DArTag and similar targeted-sequencing panels are usually delivered as a MADC table of
+microhaplotype read counts, made by the vendor's own pipeline. `madcats` builds that table from the
+FASTQs and the panel design, with every threshold on the command line and a JSON record of each
+run. It can then call genotypes from the table.
 
-The same code handles DArTag, AgriSeq (Ion Torrent), GT-seq, rhAmpSeq and Flex-Seq capture data.
-It needs only the Python 3 standard library. Every analysis threshold is a command-line option, and
-each run writes a JSON file recording its parameters and read counts.
+- **Counts alleles and finds new ones.** The alleles a panel was designed for are counted, and a
+  new microhaplotype is reported when several samples carry it or one sample has many reads of it.
+  Indels are handled, including ones the panel was not designed for.
+- **One code path for every platform.** Tested on DArTag, AgriSeq (Ion Torrent), GT-seq, rhAmpSeq
+  and Flex-Seq capture.
+- **Close to the vendor's table.** Read counts correlate at r = 0.9997 with the vendor MADC on a
+  sweetpotato DArTag panel, and dosage calls agree 95–99% across five DArTag panels.
+- **Genotypes from the same tool.** `madcats call` writes diploid and polyploid genotypes to VCFs
+  of the designed targets, of all tag variants, or of whole microhaplotypes. The MADC can also go
+  through HapApp to BIGr and other tools, as before.
+- **No dependencies.** Python 3 and its standard library. One optional command, the genome-based
+  paralog filter (`madcats filter-paralogs`), needs `mappy`.
 
 > **A prior MADC is not an input.** Generation uses only the FASTQs plus the assay design: the
 > DArTag primer/probe files, a probe design alone, or a platform-neutral Ref/Alt tag manifest.
-
-## Highlights
-
-- Closely matches vendor output: read counts correlate at r = 0.9997 with the vendor MADC on a
-  sweetpotato DArTag panel, and dosage calls agree 95–99% across five DArTag panels.
-- Designed to be platform independent, with testing performed on DArTag, GT-Seq, rhAmpSeq, Flex-Seq, and AgriSeq.
-- Builds the panel from vendor design files (`madcats design`), from the probe design and the reads
-  when there is no primer file (`madcats infer-design`), or from your own Ref/Alt tag CSV.
-- Reports a new microhaplotype only when several samples carry it, one sample has many reads of it,
-  or (optionally) it has enough high-quality reads.
-- Merges sequencing errors back into the alleles they came from, without changing any sample's
-  Ref/Alt dosage.
-- Handles indels, including ones the panel was not designed for.
-- Works with AgriSeq-style reads that don't start at a primer (`madcats normalize-reads`) and with
-  paired-end reads (`madcats merge-pairs`).
-- Writes raw MADC tables for HapApp, which prepares them for BIGr and other tools. Each row also
-  lists its variants and marker type.
-- Calls diploid and polyploid genotypes from the MADC (`madcats call`) and writes VCFs of the
-  designed targets, of all tag variants, or of whole microhaplotypes.
-- Optional genome-based paralog filter (`madcats filter-paralogs`, needs `pip install 'madcats[genome]'`)
-  for panels where co-amplified paralogous copies inflate heterozygosity; works on vendor and HapApp
-  fixed-allele-ID MADCs too.
-- Pure Python with no dependencies for everything else. Runs samples in parallel and caches per-sample results, so
-  reruns are fast.
 
 ## Installation
 
@@ -109,6 +94,12 @@ madcats validate \
   --generated results/project_MADC.csv \
   --expected vendor_MADC.csv \
   --report results/validation.json
+
+# 4) Optional: call genotypes and write a VCF
+madcats call \
+  --madc results/project_MADC.csv \
+  --ploidy 4 \
+  --output-prefix results/project
 ```
 
 No primer file? Infer the panel from the probe design and the reads:
@@ -134,7 +125,7 @@ madcats generate --fastq-dir normalized/ --fastq-glob "*.fastq" \
 Full documentation is available at [madcats.readthedocs.io](https://madcats.readthedocs.io), including:
 
 - [Getting Started](https://madcats.readthedocs.io/en/latest/getting-started/installation.html): installation and first steps
-- [Tutorials](https://madcats.readthedocs.io/en/latest/tutorials/dartag.html): walkthroughs for DArTag, primer-free, AgriSeq and paired-end data
+- [Tutorials](https://madcats.readthedocs.io/en/latest/tutorials/dartag.html): walkthroughs for DArTag, primer-free, AgriSeq and paired-end data, the paralog filter and genotype calling
 - [Command Reference](https://madcats.readthedocs.io/en/latest/commands/overview.html): every subcommand and option
 - [Evidence Model](https://madcats.readthedocs.io/en/latest/reference/evidence-model.html): how alleles are counted, discovered and denoised
 

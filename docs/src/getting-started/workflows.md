@@ -91,8 +91,7 @@ vendor, or HapApp) and writes VCFs. Ploidy can differ between samples:
 madcats call --madc MADC.csv --ploidy 4 --output-prefix genotypes
 ```
 
-See [madcats call](../commands/call.md) for the record types, the priors and when to fit an allelic
-bias.
+See [Calling Genotypes from a MADC](../tutorials/genotype-calling.md).
 
 ## Freeze Windows Across Runs
 

@@ -17,6 +17,7 @@
 - [AgriSeq and Other Non-Primer-Started Reads](tutorials/agriseq.md)
 - [Paired-End Reads and Tiling](tutorials/paired-end.md)
 - [Filtering Paralogs with a Reference Genome](tutorials/paralog-filter.md)
+- [Calling Genotypes from a MADC](tutorials/genotype-calling.md)
 
 # Command Reference
 
