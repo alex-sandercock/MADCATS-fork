@@ -2605,7 +2605,7 @@ without filters; polyRAD is `IterateHWE` with its defaults:
 | 4x inbred lines, biased | – | 84.9% | 97.3% | 98.4% | 72.8% | 89.8% |
 | updog 4x random mating | 84.3% | 96.7% | 96.8% | 96.7% | 96.7% | 96.7% |
 | updog 4x random mating, biased | 72.3% | 96.3% | 82.3% | 81.5% | 96.2% | 96.2% |
-| updog 4x F1, biased | 76.1% | 94.0% | 81.6% | 81.1% | 87.6% | 93.3% |
+| updog 4x F1, biased | 76.1% | 94.0% | 81.6% | 81.1% | 87.6% | 93.9% |
 | updog 4x `norm` genotypes, biased | 74.6% | 95.9% | 84.2% | 83.6% | 95.8% | 95.9% |
 | updog 2x random mating, biased | 99.5% | 100.0% | 99.6% | 99.6% | 100.0% | 100.0% |
 | updog 6x random mating, biased | 58.3% | 86.4% | 67.3% | 66.6% | 86.5% | 86.3% |
@@ -2852,6 +2852,106 @@ Records that keep a bias at margins 0, 2, 5, 10 and 20: potato 1,513, 1,153,
   (potato 96.45% against 96.47%; pooled tetraploids 90.46% against 90.53%).
 - `off` stays the default. `auto` takes as long as `fit`, several times a run
   without a bias, and on smelt it is 0.14 points under `off`.
+
+**`auto` on other kinds of population, and inbred lines.** The rule was chosen
+on five data sets of outbred samples. The twenty tables of the simulator
+comparison above (the same draws) were called again with each prior and each
+setting of `--allele-bias`, every run with the read model it estimates. Share
+of dosages right, without filters, and the records whose bias `auto` used:
+
+| Table | hwe: `off` | `fit` | `auto` | norm: `off` | `fit` | `auto` | Biases `auto` used: hwe, norm |
+|---|---|---|---|---|---|---|---|
+| 4x random mating | 89.5% | 89.1% | 89.5% | 89.5% | 89.0% | 89.4% | 0 of 100, 0 of 100 |
+| 4x F1 | 89.5% | 85.6% | 89.5% | 90.7% | 90.0% | 90.7% | 0 of 100, 0 of 100 |
+| 4x two subpopulations | 89.8% | 87.2% | 88.6% | 90.2% | 88.7% | 90.0% | 9 of 100, 1 of 100 |
+| 4x inbred lines | 97.4% | 71.7% | 71.7% | 98.6% | 90.3% | 90.3% | 100 of 100, 100 of 100 |
+| 4x random mating, biased | 81.8% | 87.4% | 85.4% | 81.3% | 87.4% | 85.2% | 22 of 100, 20 of 100 |
+| 4x F1, biased | 85.5% | 85.9% | 85.2% | 85.2% | 88.9% | 86.5% | 21 of 100, 13 of 100 |
+| 4x two subpopulations, biased | 85.4% | 88.7% | 87.9% | 85.4% | 89.6% | 87.7% | 18 of 100, 12 of 100 |
+| 4x inbred lines, biased | 97.3% | 72.8% | 72.8% | 98.4% | 89.8% | 89.8% | 100 of 100, 100 of 100 |
+| updog 4x random mating | 96.8% | 96.7% | 96.8% | 96.7% | 96.7% | 96.7% | 0 of 150, 0 of 150 |
+| updog 4x random mating, biased | 82.3% | 96.2% | 96.1% | 81.5% | 96.2% | 96.1% | 115 of 150, 115 of 150 |
+| updog 4x F1, biased | 81.6% | 87.6% | 90.5% | 81.1% | 93.9% | 93.8% | 109 of 150, 107 of 150 |
+| updog 4x `norm` genotypes, biased | 84.3% | 95.8% | 95.7% | 83.6% | 95.9% | 95.8% | 114 of 150, 114 of 150 |
+| updog 2x random mating, biased | 99.6% | 100.0% | 100.0% | 99.6% | 100.0% | 100.0% | 115 of 150, 115 of 150 |
+| updog 6x random mating, biased | 67.3% | 86.5% | 83.8% | 66.6% | 86.3% | 82.6% | 76 of 150, 69 of 150 |
+| updog 4x random mating, biased, low depth | 76.3% | 84.6% | 83.0% | 75.6% | 84.4% | 82.2% | 66 of 150, 56 of 150 |
+| polyRAD 4x outbred | 89.0% | 88.5% | 89.0% | 88.9% | 88.5% | 88.9% | 0 of 150, 0 of 150 |
+| polyRAD 4x, inbreeding 0.5 | 93.2% | 90.7% | 92.9% | 93.9% | 93.1% | 94.1% | 14 of 150, 2 of 150 |
+| polyRAD 2x outbred | 99.9% | 99.9% | 99.9% | 99.9% | 99.9% | 99.9% | 0 of 150, 0 of 150 |
+| polyRAD 6x outbred | 75.3% | 71.8% | 73.4% | 75.2% | 65.3% | 72.0% | 0 of 150, 0 of 150 |
+| polyRAD 4x outbred, low depth | 82.4% | 81.8% | 82.4% | 82.4% | 81.7% | 82.4% | 0 of 150, 0 of 150 |
+
+Eighty of these figures repeat the earlier table. Seventy-nine came out the
+same; `--prior norm --allele-bias fit` on updog's F1 table gives 93.9% where
+93.3% was recorded, and the earlier table now has 93.9%.
+
+- Without bias in the data, `auto` uses no record's bias in one population or
+  an F1 family (six tables) and is within 0.1 points of `off`, where `fit`
+  loses up to 3.8 points. In two subpopulations it uses 9 and 1 of 100 and
+  loses 1.2 points with `hwe` and 0.2 with `norm`; with half-inbred samples
+  it uses 14 and 2 of 150 and is within 0.3 points of `off`.
+- With bias in the data, how much of the gain `auto` keeps goes with the depth
+  and the size of the biases. On updog's tetraploid tables at 150 reads it
+  uses three quarters of the biases and is within 0.2 points of `fit` (ahead
+  of it by 3.0 on the F1 table with `hwe`); at 25 reads it uses 4 in 10 and is
+  1.6 to 2.1 points behind; on the hexaploids it uses half and is 2.7 to 3.7
+  behind. On the first group's biased tables (20 to 60 reads, smaller biases)
+  it uses an eighth to a fifth and is 0.8 to 2.4 points behind `fit`, and 0.3
+  below `off` on the F1 table with `hwe`.
+- On the polyRAD hexaploid table `auto` uses no record's bias and is still
+  1.9 points (`hwe`) and 3.2 (`norm`) under `off`. The loss comes with the
+  read model a run with a bias estimates: an overdispersion of 10 and a
+  background rate of 0.0002, where 20 and 0.001 were simulated and are what
+  the run without a bias estimates.
+- On inbred lines `auto` fails as `fit` does. Every record's bias ends at a
+  limit of the search (0.135 or 7.39) with a gain of 19 to 115, over the
+  margin of 10, so every one is used. A bias changes the expected read
+  fraction of the heterozygous dosages only; pushed to the limit under a
+  prior that expects heterozygotes, it lets samples with all their reads on
+  one allele pass for one to three copies. With `hwe`, 2,222 of 6,965 samples without the
+  allele are called with one to three copies, where the run without a bias
+  miscalls 208.
+
+For inbred lines the setting that matters is the selfing rate. The two inbred
+tables with `--prior hwe`, and how many of the 100 records ended at a limit
+and were used by `auto`:
+
+| Table, selfing rate | `off` | `fit` | `auto` | At a limit | `auto` used |
+|---|---|---|---|---|---|
+| 4x inbred lines, none | 97.4% | 71.7% | 71.7% | 100 | 100 |
+| 4x inbred lines, 0.95 | 99.6% | 98.5% | 99.4% | 85 | 7 |
+| 4x inbred lines, 0.99 | 99.9% | 99.6% | 99.9% | 0 | 0 |
+| 4x inbred lines, biased, none | 97.3% | 72.8% | 72.8% | 100 | 100 |
+| 4x inbred lines, biased, 0.95 | 99.6% | 98.3% | 99.0% | 79 | 18 |
+| 4x inbred lines, biased, 0.99 | 99.8% | 99.7% | 99.8% | 0 | 0 |
+
+With the selfing rate given, the prior no longer wants heterozygotes and the
+bias has little to gain (at 0.99 no gain reaches 3). The bias in the data
+makes no difference to these samples: without a bias fitted, the biased and
+unbiased tables are within 0.1 points of each other.
+
+A change to the rule was tried in a scratch copy: under `auto`, a bias that
+ends at a limit of the search is not used. Each data set under the read model
+of its run with `auto`, with `--prior hwe`:
+
+| Data set | `auto` | `auto`, biases at a limit not used | At a limit and used |
+|---|---|---|---|
+| 4x inbred lines | 71.7% | 97.6% | 100 of 100 |
+| 4x inbred lines, biased | 72.8% | 97.6% | 100 of 100 |
+| The other six tables of the first group | unchanged | unchanged | 0 of 100 |
+| Potato, 85 clones, against the array | 96.47% | 96.36% | 4 of 1,544 |
+| Potato vendor MADC | 91.88% | 91.80% | 25 of 3,904 |
+| Delta smelt targets | 99.27% | 99.27% | 10 of 946 |
+| Delta smelt off-target | 99.39% | 99.43% | |
+| Pooled tetraploids, 50 reads, targets | 90.53% | 90.53% | 15 of 946 |
+| Pooled hexaploids, 50 reads, targets | 77.60% | 77.60% | 23 of 944 |
+
+It restores the inbred tables (98.7% and 98.5% with `--prior norm`) and costs
+0.1 points on both potato sets, where the few markers at a limit are strongly
+biased in truth. The share of records at a limit separates the cases without
+changing a call: 0.3 to 2.5% on the five real data sets and all of them on
+inbred lines. The rule is unchanged.
 
 **The structure prior (`--prior structure`).** polyRAD's `IteratePopStruct`
 gives each sample its own allele frequencies: it runs a principal component

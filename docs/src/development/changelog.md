@@ -37,7 +37,9 @@ Notable changes by version. Measurements behind each change are in the
   dosages matched) and on polyploids pooled from real diploid reads, which have no bias, it
   removes the loss (hexaploids at 50 reads: 77.6% right, as without a bias, against 69.8%). Every
   two-allele record still carries its fitted bias in `INFO/BIAS`; one called without it is flagged
-  `INFO/BIASUNUSED`. The bias table gains `Gain` and `Used` columns.
+  `INFO/BIASUNUSED`. The bias table gains `Gain` and `Used` columns. It does not protect inbred
+  lines, where every fitted bias passes the rule: call those without a bias and with
+  `--selfing-rate`.
 - `call` estimates a background-read rate (`--background-rate auto`, the default) together with
   the overdispersion: the share of reads that show an allele they did not come from. It replaces
   polyRAD's contamination rate, which is now 0 unless set, because contamination cannot account for

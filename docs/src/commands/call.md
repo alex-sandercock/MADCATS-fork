@@ -371,7 +371,13 @@ pooled from smelt reads (the tables are in the development record):
   89.1% to 91.9%, where the study's genotypes have 91.8%.
 - On real diploid reads (96 delta smelt) it lowered agreement with alignment-based genotypes by
   0.15 points at targets and 0.3 at off-target SNPs.
-- On outbred tetraploid data without bias it cost up to 1.5 points.
+- On outbred tetraploid data without bias `fit` cost up to 1.5 points. `auto` cost under 0.1 in one
+  population or an F1 family, and 0.2 to 1.2 in two subpopulations.
+- `auto` needs depth and a clear bias to keep it. On updog-simulated biased tetraploids at 150
+  reads it kept three quarters of the biases and was level with `fit` (96.1% against 96.2%, from
+  82.3% without a bias). At 25 reads it kept 4 in 10 and was 1.6 points behind (83.0% against
+  84.6%, from 76.3%). On hexaploids at 150 reads it kept half and was 2.7 behind (83.8% against
+  86.5%, from 67.3%).
 - Do not fit it for inbred lines, with `fit` or with `auto`. A bias changes only what a
   heterozygote shows, so there is nothing for it to correct, and under a prior that expects
   heterozygotes the fit runs to the limit of the search, where homozygous samples pass for
