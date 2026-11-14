@@ -45,8 +45,10 @@ MADCATS's own, with no published counterpart: the estimate of the
 overdispersion and of one background-read rate for the whole table
 (``estimate_overdispersion``, ``estimate_read_model``) and its use of the
 free-weights prior, the order of bias before background reads, the search for
-the allelic bias (``fit_allele_bias``) and the rule that uses a fitted bias
-only where it gains a margin (``BIAS_AUTO_MIN_GAIN``), the fit of the
+the allelic bias (``fit_allele_bias``), the rules that use a fitted bias only
+where it gains a margin and does not end at a limit of the search
+(``BIAS_AUTO_MIN_GAIN``, ``BIAS_REJECTED_AT_LIMIT``) and the separate read
+model of records called without a bias (``choose_read_model``), the fit of the
 ``norm`` prior by Newton's method and its fit per ploidy, the neighbour-based
 ``structure`` prior (``find_neighbours``), the exact search for dosages that
 sum to the ploidy as a check on polyRAD's rule, and the VCF fields (GQ, GP,
@@ -207,6 +209,15 @@ class ModelSettings:
         add to the log-likelihood of its read counts, after the prior on the
         bias, for the record to be called with it; a record that gains less
         is called without a bias.  0 uses every fitted bias.
+    reject_bias_at_limit: with ``fit_allele_bias``, do not use a fitted bias
+        that ends at a limit of the search (``BIAS_LOG_LIMIT``); the record
+        is called without a bias.
+    read_model_without_bias: with ``fit_allele_bias``, the overdispersion and
+        the background rate for a record that is called without a bias: one
+        whose fitted bias is not used, and one with more than two alleles,
+        which gets none.  ``overdispersion`` and ``background_rate`` are then
+        for the records called with their bias.  None uses those for every
+        record.
     tolerance: the passes of a record stop once the change they watch is at
         or below this: the mean absolute change in the record's allele
         frequencies (``hwe``), also the largest change in any prior
@@ -229,6 +240,8 @@ class ModelSettings:
     selfing_rate: float = 0.0
     fit_allele_bias: bool = False
     min_bias_gain: float = 0.0
+    reject_bias_at_limit: bool = False
+    read_model_without_bias: Optional[Tuple[float, float]] = None
     tolerance: float = DEFAULT_TOLERANCE
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     neighbours: Optional[Tuple[Tuple[int, ...], ...]] = None
@@ -256,6 +269,14 @@ class ModelSettings:
             # The bias search scores a bias by the prior shared within a ploidy; it has not
             # been worked out or tested for priors that differ from sample to sample.
             raise ValueError("an allelic bias cannot be fitted with the structure prior")
+
+    def without_bias(self) -> "ModelSettings":
+        """These settings for a record that is called without an allelic bias: those of a run that fits none."""
+        overdispersion, background_rate = self.read_model_without_bias or (self.overdispersion, self.background_rate)
+        return dataclasses.replace(
+            self, fit_allele_bias=False, min_bias_gain=0.0, reject_bias_at_limit=False, read_model_without_bias=None,
+            overdispersion=overdispersion, background_rate=background_rate,
+        )
 
 
 @dataclasses.dataclass
@@ -1173,6 +1194,16 @@ BIAS_LOG_TOLERANCE = 0.01
 # delta smelt and polyploids pooled from smelt reads: at 10 the records of biased data are
 # called with their bias and nine in ten records of unbiased data without (docs/DEVELOPMENT.md).
 BIAS_AUTO_MIN_GAIN = 10.0
+# Why a record was called without the bias fitted to it (``BiasFit.rejection``).  A bias at
+# a limit of the search is not used with --allele-bias auto
+# (``ModelSettings.reject_bias_at_limit``): where samples have few heterozygotes, as inbred
+# lines do, and the prior expects them, a bias at the limit makes homozygous samples pass
+# for heterozygous ones and gains far more than the margin (docs/DEVELOPMENT.md).
+BIAS_REJECTED_FOR_GAIN = "gain_below_margin"
+BIAS_REJECTED_AT_LIMIT = "at_search_limit"
+# A warning is given when this share of a run's fitted biases end at a limit of the search.
+# On five real data sets the share was 0.3 to 2.5%; on simulated inbred lines, all of them.
+BIAS_AT_LIMIT_WARNING_SHARE = 0.2
 
 
 class BiasFit(NamedTuple):
@@ -1184,10 +1215,13 @@ class BiasFit(NamedTuple):
     ``nearest_log_start`` is the log bias of the starting value nearest the
     result, ``fits`` the number of bias values tried, and ``at_limit``
     whether the result is the largest or smallest bias the search allows.
-    ``gain`` is how much the fitted bias raised the objective over no bias,
-    and ``used`` whether the record's call was made with it: it is not where
-    the gain is less than ``ModelSettings.min_bias_gain``, and the record's
-    ``allele_biases`` are then 1 although a bias was fitted.
+    ``gain`` is how much the fitted bias raised the objective over no bias.
+    ``rejection`` is None when the record's call was made with the bias.
+    Otherwise it says why not, and the record's ``allele_biases`` are 1
+    although a bias was fitted: ``BIAS_REJECTED_FOR_GAIN`` where the gain is
+    less than ``ModelSettings.min_bias_gain``, ``BIAS_REJECTED_AT_LIMIT``
+    where the gain is enough but the bias is at a limit of the search and
+    ``ModelSettings.reject_bias_at_limit`` is set.
     """
 
     log_bias: float
@@ -1196,7 +1230,11 @@ class BiasFit(NamedTuple):
     fits: int
     at_limit: bool
     gain: float
-    used: bool
+    rejection: Optional[str] = None
+
+    @property
+    def used(self) -> bool:
+        return self.rejection is None
 
 
 def log_probability_of_counts(log_likelihoods: Sequence[float], log_prior: Sequence[float]) -> float:
@@ -1277,8 +1315,10 @@ def fit_allele_bias(
     otherwise the record's result is its call without a bias, and the fitted
     bias is only reported (``BiasFit``).  A bias fitted to a record that has
     none follows the noise in its counts, and on reads without bias this cost
-    accuracy, most of all in hexaploids.  The rule is MADCATS's own; updog
-    always uses the bias it fits.
+    accuracy, most of all in hexaploids.  With
+    ``settings.reject_bias_at_limit`` a bias at a limit of the search is not
+    used either (see ``BIAS_REJECTED_AT_LIMIT``).  Both rules are MADCATS's
+    own; updog always uses the bias it fits.
     """
     tried: Dict[float, Tuple[float, RecordCall]] = {}
 
@@ -1315,14 +1355,17 @@ def fit_allele_bias(
     log_bias = max(tried, key=lambda value: tried[value][0])
     best_objective, result = tried[log_bias]
     gain = best_objective - tried[0.0][0]
-    used = gain >= settings.min_bias_gain
-    if not used:
+    at_limit = abs(log_bias) >= BIAS_LOG_LIMIT
+    rejection = None
+    if gain < settings.min_bias_gain:
+        rejection = BIAS_REJECTED_FOR_GAIN
+    elif at_limit and settings.reject_bias_at_limit:
+        rejection = BIAS_REJECTED_AT_LIMIT
+    if rejection is not None:
         result = tried[0.0][1]
     # The starting value whose refinement gave the fitted bias: the nearest one.
     nearest_log_start = min(BIAS_LOG_STARTS, key=lambda start: abs(start - log_bias))
-    result.bias_fit = BiasFit(
-        log_bias, best_objective, nearest_log_start, len(tried), abs(log_bias) >= BIAS_LOG_LIMIT, gain, used
-    )
+    result.bias_fit = BiasFit(log_bias, best_objective, nearest_log_start, len(tried), at_limit, gain, rejection)
     return result
 
 
@@ -1376,7 +1419,10 @@ def call_record(
     A record with two alleles is computed for its second (alternate) allele
     only; the first is its mirror image (``_with_mirrored_reference_allele``).
     With ``settings.fit_allele_bias`` such a record also gets an allelic bias
-    (``fit_allele_bias``); records with more alleles never do.
+    (``fit_allele_bias``); records with more alleles never do.  A record that
+    is called without a bias, because it has more than two alleles or because
+    its fitted bias is not used, is called with ``settings.without_bias()``:
+    exactly as a run that fits no bias calls it.
     """
     if len(depths) != len(ploidies):
         raise ValueError("depths and ploidies must have one entry per sample")
@@ -1393,13 +1439,25 @@ def call_record(
     if two_alleles:
         depths = [[sample_depths[1]] for sample_depths in depths]
         frequencies = [frequencies[1]]
-    count_constants = [
-        [count_constant(allele_depth, record_depth, settings.overdispersion) if record_depth else 0.0
-         for allele_depth in sample_depths]
-        for sample_depths, record_depth in zip(depths, record_depths)
-    ]
+    elif settings.fit_allele_bias:
+        settings = settings.without_bias()
+
+    def count_constants_at(overdispersion: float) -> List[List[float]]:
+        return [
+            [count_constant(allele_depth, record_depth, overdispersion) if record_depth else 0.0
+             for allele_depth in sample_depths]
+            for sample_depths, record_depth in zip(depths, record_depths)
+        ]
+
+    count_constants = count_constants_at(settings.overdispersion)
     if two_alleles and settings.fit_allele_bias:
         result = fit_allele_bias(depths, record_depths, count_constants, ploidies, settings, frequencies)
+        if not result.bias_fit.used and settings.read_model_without_bias is not None:
+            fit = result.bias_fit
+            settings = settings.without_bias()
+            count_constants = count_constants_at(settings.overdispersion)
+            result = _iterate_record(depths, record_depths, count_constants, ploidies, settings, frequencies, [1.0])
+            result.bias_fit = fit
     else:
         # Without neighbours, _iterate_record gives the structure prior Hardy-Weinberg
         # proportions, which is where its second run starts from.
@@ -1705,16 +1763,19 @@ def estimate_read_model(
     background_rates: Sequence[float] = BACKGROUND_RATE_GRID,
     overdispersions: Sequence[float] = OVERDISPERSION_GRID,
     parallel_map=map,
+    start_background_rate: float = FALLBACK_BACKGROUND_RATE,
+    start_overdispersion: float = POLYRAD_OVERDISPERSION,
 ) -> ReadModelEstimate:
     """Choose the background-read rate and the overdispersion that make the read counts most probable.
 
     For a given background-read rate the overdispersion is chosen by
     ``estimate_overdispersion``, which also gives the log-likelihood of the
     counts at its choice.  The rate with the highest such log-likelihood is
-    found by starting at the rate nearest ``FALLBACK_BACKGROUND_RATE`` and
-    moving to a neighbouring rate for as long as that raises it.  Give a
-    single value in ``background_rates`` or ``overdispersions`` to hold that
-    parameter fixed.
+    found by starting at the rate nearest ``start_background_rate`` and
+    moving to a neighbouring rate for as long as that raises it; the search
+    for the overdispersion at the first rate starts from
+    ``start_overdispersion``.  Give a single value in ``background_rates`` or
+    ``overdispersions`` to hold that parameter fixed.
 
     The two parameters can be told apart because they act on different
     samples: reads of an allele in samples that do not carry it show the
@@ -1734,7 +1795,7 @@ def estimate_read_model(
         rate = rates[index]
         if rate not in tried:
             # Start each search from the overdispersion chosen at the rate tried before.
-            start = POLYRAD_OVERDISPERSION
+            start = start_overdispersion
             if tried:
                 previous = tried[min(tried, key=lambda other: abs(other - rate))]
                 start = previous.value if previous.value is not None else start
@@ -1749,7 +1810,7 @@ def estimate_read_model(
             return NEGATIVE_INFINITY
         return max(estimate.log_likelihood_by_value.values())
 
-    best = min(range(len(rates)), key=lambda index: abs(rates[index] - FALLBACK_BACKGROUND_RATE))
+    best = min(range(len(rates)), key=lambda index: abs(rates[index] - start_background_rate))
     log_likelihood_at(best)
     while True:
         neighbours = [index for index in (best - 1, best + 1) if 0 <= index < len(rates)]
@@ -2450,7 +2511,7 @@ def format_record(
         if not fit.used:
             info.append("BIASUNUSED")
         bias_row = BiasRow(
-            position, record_id, reference_bias, fit.objective, fit.gain, fit.used,
+            position, record_id, reference_bias, fit.objective, fit.gain, fit.rejection,
             math.exp(-fit.nearest_log_start), fit.fits, result.converged, fit.at_limit,
         )
     format_keys = ["GT", "AD", "DP"] + (["XD"] if excluded_depths is not None else []) + value_keys
@@ -2468,8 +2529,9 @@ class BiasRow(NamedTuple):
     ``bias`` and ``best_start`` are for the reference allele, as in the VCF's
     BIAS field.  ``objective`` is the log-likelihood of the record's read
     counts at the fitted bias plus the log of the prior on the bias, ``gain``
-    what the fitted bias added to it over no bias, and ``used`` whether the
-    genotypes were called with the bias (see ``BiasFit``).
+    what the fitted bias added to it over no bias, and ``rejection`` why the
+    genotypes were called without the bias, or None when they were called
+    with it (see ``BiasFit``).
     """
 
     position: int
@@ -2477,7 +2539,7 @@ class BiasRow(NamedTuple):
     bias: float
     objective: float
     gain: float
-    used: bool
+    rejection: Optional[str]
     best_start: float
     fits: int
     converged: bool
@@ -2658,7 +2720,7 @@ def _haplotype_record(
     ]
     # Haplotype records are called without an allelic bias, including those that happen to
     # have two alleles, so that every record of the file is called the same way.
-    without_bias = dataclasses.replace(options, settings=dataclasses.replace(options.settings, fit_allele_bias=False))
+    without_bias = dataclasses.replace(options, settings=options.settings.without_bias())
     line, tallies, _ = format_record(
         clone_id, 1, clone_id, alleles,
         [[depth_by_sequence[sequence][sample] for sequence in alleles] for sample in range(sample_count)],
@@ -2721,10 +2783,19 @@ def model_description(
         )
         if settings.min_bias_gain > 0:
             prior += f", and used where it raises the log-likelihood by {settings.min_bias_gain:g} or more"
+        if settings.reject_bias_at_limit:
+            prior += " and does not end at a limit of the search"
+    without_bias = ""
+    if settings.read_model_without_bias is not None:
+        overdispersion, background_rate = settings.read_model_without_bias
+        without_bias = (
+            f"; for records called without a bias, overdispersion {overdispersion:g} and background-read rate "
+            f"{background_rate:g}"
+        )
     return (
         f"beta-binomial read-count likelihood (overdispersion {settings.overdispersion:g}{source}, contamination rate "
-        f"{settings.contamination_rate:g}, background-read rate {settings.background_rate:g}{background_source}) "
-        f"adapted from polyRAD; {prior}"
+        f"{settings.contamination_rate:g}, background-read rate {settings.background_rate:g}{background_source}"
+        f"{without_bias}) adapted from polyRAD; {prior}"
     )
 
 
@@ -2756,11 +2827,11 @@ def vcf_header(
             'reports it for reference read counts: below 1 the reference allele is over-represented among the reads, '
             'above 1 under-represented (two-allele records)">'
         )
-        if options.settings.min_bias_gain > 0:
+        if options.settings.min_bias_gain > 0 or options.settings.reject_bias_at_limit:
             lines.append(
                 '##INFO=<ID=BIASUNUSED,Number=0,Type=Flag,Description="The genotypes of this record were called '
                 'without its fitted bias, which raised the log-likelihood of the read counts by less than '
-                f'{options.settings.min_bias_gain:g} (--allele-bias auto)">'
+                f'{options.settings.min_bias_gain:g} or ended at a limit of the search (--allele-bias auto)">'
             )
     lines += [
         '##INFO=<ID=NS,Number=1,Type=Integer,Description="Samples with a called genotype">',
@@ -2853,6 +2924,11 @@ class ReadModelChoice:
     when the value was given on the command line, and also when the estimate
     could not be used and the fallback value took its place.  The two reports
     go into the QC JSON.
+
+    ``without_bias`` is set when the settings can leave a record without the
+    bias fitted to it and the read model is estimated: the read model for
+    such records, estimated without a bias.  The values of this object are
+    then for the records called with their bias.
     """
 
     overdispersion: float
@@ -2861,6 +2937,92 @@ class ReadModelChoice:
     background_rate_estimated: bool
     overdispersion_report: Dict[str, object]
     background_report: Dict[str, object]
+    without_bias: Optional["ReadModelChoice"] = None
+
+
+def _read_model_from_estimate(
+    estimate: ReadModelEstimate, requested_overdispersion, requested_background_rate, used_for: Optional[str] = ""
+) -> ReadModelChoice:
+    """The read model a run takes from an estimate, with its reports for the QC JSON.
+
+    A value given on the command line is kept.  A value that could not be
+    estimated is replaced by its fallback: both when the table is too small,
+    and the overdispersion also when its estimate is the lowest value tried.
+    What is used is said on stderr, followed by ``used_for`` when the run has
+    two read models, and nothing is said when ``used_for`` is None.
+    """
+    def say(message: str) -> None:
+        if used_for is not None:
+            print(message + (f", {used_for}" if used_for else ""), file=sys.stderr)
+
+    overdispersion_report: Dict[str, object] = {"requested": requested_overdispersion}
+    background_report: Dict[str, object] = {"requested": requested_background_rate}
+    overdispersion_estimate = estimate.overdispersion_estimate
+    too_small = overdispersion_estimate.value is None
+
+    background_rate = requested_background_rate
+    background_rate_estimated = requested_background_rate == AUTO and not too_small
+    if requested_background_rate == AUTO:
+        background_report["estimate"] = estimate.background_rate if background_rate_estimated else None
+        background_report["by_rate"] = (
+            {
+                format(rate, "g"): {"overdispersion": value, "log_likelihood": round(total, 3)}
+                for rate, (value, total) in estimate.by_background_rate.items()
+            }
+            if background_rate_estimated
+            else {}
+        )
+        background_rate = estimate.background_rate if background_rate_estimated else FALLBACK_BACKGROUND_RATE
+        at_end = background_rate_estimated and background_rate in (
+            min(BACKGROUND_RATE_GRID), max(BACKGROUND_RATE_GRID)
+        )
+        say(
+            f"{'Estimated' if background_rate_estimated else 'Using'} background-read rate: {background_rate:g}"
+            + (" (the end of the range tried)" if at_end else "")
+        )
+    background_report["used"] = background_rate
+
+    overdispersion = requested_overdispersion
+    overdispersion_estimated = False
+    if requested_overdispersion == AUTO:
+        overdispersion_report.update(
+            estimate=overdispersion_estimate.value,
+            markers_used=overdispersion_estimate.markers_used,
+            cells_with_reads=overdispersion_estimate.cells_with_reads,
+            values_by_round=overdispersion_estimate.values_by_round,
+            at_limit=overdispersion_estimate.at_limit,
+            log_likelihood_by_value={
+                format(value, "g"): round(total, 3)
+                for value, total in overdispersion_estimate.log_likelihood_by_value.items()
+            },
+        )
+        if too_small:
+            overdispersion = FALLBACK_OVERDISPERSION
+            say(f"Using overdispersion: {overdispersion:g}")
+        elif overdispersion_estimate.at_limit == "lowest":
+            overdispersion = FALLBACK_OVERDISPERSION
+            say(
+                f"warning: the overdispersion estimate is the lowest value tried ({overdispersion_estimate.value:g}), "
+                "as it is when no sample is heterozygous (inbred lines) and the reads show no scatter to measure. "
+                f"Using {overdispersion:g}; set --overdispersion to a number to choose it yourself."
+            )
+        else:
+            overdispersion = float(overdispersion_estimate.value)
+            overdispersion_estimated = True
+            limit_note = ""
+            if overdispersion_estimate.at_limit == "highest":
+                limit_note = (
+                    "; this is the highest value tried, so the counts scatter no more than random sampling of reads"
+                )
+            say(
+                f"Estimated overdispersion: {overdispersion:g} "
+                f"(from {overdispersion_estimate.markers_used:,} markers{limit_note})"
+            )
+    overdispersion_report["used"] = overdispersion
+    return ReadModelChoice(
+        overdispersion, background_rate, overdispersion_estimated, background_rate_estimated, overdispersion_report,
+        background_report,
+    )
 
 
 def choose_read_model(
@@ -2888,103 +3050,78 @@ def choose_read_model(
     best value is the lowest one tried, which is what a table without
     heterozygous samples and without stray reads gives, since it has no
     scatter to measure.
+
+    With an allelic bias there are two estimates.  The first is made without
+    a bias, as for a run that fits none.  The second fits every record's bias
+    and keeps it, and its search starts from the first: started from
+    polyRAD's value it stopped at an overdispersion of 10 on a simulated
+    hexaploid table whose counts are far more probable at 20, with or without
+    a bias, because a bias and dosage weights fitted at one overdispersion
+    make that value look best.  The second estimate is the read model of the
+    records called with their bias.  Where the settings can leave a record
+    without its bias (``min_bias_gain``, ``reject_bias_at_limit``), the
+    first is the read model of the records called without one, so that such
+    a record is called exactly as a run without a bias calls it
+    (docs/DEVELOPMENT.md).
     """
-    overdispersion_report: Dict[str, object] = {"requested": requested_overdispersion}
-    background_report: Dict[str, object] = {"requested": requested_background_rate}
     if AUTO not in (requested_overdispersion, requested_background_rate):
-        overdispersion_report["used"] = requested_overdispersion
-        background_report["used"] = requested_background_rate
         return ReadModelChoice(
-            requested_overdispersion, requested_background_rate, False, False, overdispersion_report,
-            background_report,
+            requested_overdispersion, requested_background_rate, False, False,
+            {"requested": requested_overdispersion, "used": requested_overdispersion},
+            {"requested": requested_background_rate, "used": requested_background_rate},
         )
 
-    # With an allelic bias, the estimate fits every record's bias and keeps it, whatever
-    # ``min_bias_gain`` the calls will use: giving up the small biases here as well changed
-    # the estimate little and did not help the calls.
-    estimate = estimate_read_model(
-        depths_by_marker,
-        ploidies,
-        dataclasses.replace(settings, prior=PRIOR_FREE, selfing_rate=0.0, min_bias_gain=0.0),
-        BACKGROUND_RATE_GRID if requested_background_rate == AUTO else (requested_background_rate,),
-        OVERDISPERSION_GRID if requested_overdispersion == AUTO else (requested_overdispersion,),
-        parallel_map,
+    background_rates = BACKGROUND_RATE_GRID if requested_background_rate == AUTO else (requested_background_rate,)
+    overdispersions = OVERDISPERSION_GRID if requested_overdispersion == AUTO else (requested_overdispersion,)
+    estimate_settings = dataclasses.replace(
+        settings, prior=PRIOR_FREE, selfing_rate=0.0, min_bias_gain=0.0, reject_bias_at_limit=False,
+        read_model_without_bias=None,
     )
-    overdispersion_estimate = estimate.overdispersion_estimate
-    too_small = overdispersion_estimate.value is None
-    if too_small:
+    estimate_without_bias = estimate_read_model(
+        depths_by_marker, ploidies, dataclasses.replace(estimate_settings, fit_allele_bias=False), background_rates,
+        overdispersions, parallel_map,
+    )
+    baseline = estimate_without_bias.overdispersion_estimate
+    if baseline.value is None:
         print(
-            f"note: too few read counts to estimate the read model ({overdispersion_estimate.cells_with_reads:,} "
+            f"note: too few read counts to estimate the read model ({baseline.cells_with_reads:,} "
             f"sample-by-marker cells with reads; {OVERDISPERSION_MIN_CELLS} needed).",
             file=sys.stderr,
         )
+    if not settings.fit_allele_bias:
+        return _read_model_from_estimate(estimate_without_bias, requested_overdispersion, requested_background_rate)
 
-    background_rate = requested_background_rate
-    background_rate_estimated = requested_background_rate == AUTO and not too_small
-    if requested_background_rate == AUTO:
-        background_report["estimate"] = estimate.background_rate if background_rate_estimated else None
-        background_report["by_rate"] = (
-            {
-                format(rate, "g"): {"overdispersion": value, "log_likelihood": round(total, 3)}
-                for rate, (value, total) in estimate.by_background_rate.items()
-            }
-            if background_rate_estimated
-            else {}
-        )
-        background_rate = estimate.background_rate if background_rate_estimated else FALLBACK_BACKGROUND_RATE
-        at_end = background_rate_estimated and background_rate in (
-            min(BACKGROUND_RATE_GRID), max(BACKGROUND_RATE_GRID)
-        )
-        print(
-            f"{'Estimated' if background_rate_estimated else 'Using'} background-read rate: {background_rate:g}"
-            + (" (the end of the range tried)" if at_end else ""),
-            file=sys.stderr,
-        )
-    background_report["used"] = background_rate
-
-    overdispersion = requested_overdispersion
-    overdispersion_estimated = False
-    if requested_overdispersion == AUTO:
-        overdispersion_report.update(
-            estimate=overdispersion_estimate.value,
-            markers_used=overdispersion_estimate.markers_used,
-            cells_with_reads=overdispersion_estimate.cells_with_reads,
-            values_by_round=overdispersion_estimate.values_by_round,
-            at_limit=overdispersion_estimate.at_limit,
-            log_likelihood_by_value={
-                format(value, "g"): round(total, 3)
-                for value, total in overdispersion_estimate.log_likelihood_by_value.items()
-            },
-        )
-        if too_small:
-            overdispersion = FALLBACK_OVERDISPERSION
-            print(f"Using overdispersion: {overdispersion:g}", file=sys.stderr)
-        elif overdispersion_estimate.at_limit == "lowest":
-            overdispersion = FALLBACK_OVERDISPERSION
-            print(
-                f"warning: the overdispersion estimate is the lowest value tried ({overdispersion_estimate.value:g}), "
-                "as it is when no sample is heterozygous (inbred lines) and the reads show no scatter to measure. "
-                f"Using {overdispersion:g}; set --overdispersion to a number to choose it yourself.",
-                file=sys.stderr,
-            )
-        else:
-            overdispersion = float(overdispersion_estimate.value)
-            overdispersion_estimated = True
-            limit_note = ""
-            if overdispersion_estimate.at_limit == "highest":
-                limit_note = (
-                    "; this is the highest value tried, so the counts scatter no more than random sampling of reads"
-                )
-            print(
-                f"Estimated overdispersion: {overdispersion:g} "
-                f"(from {overdispersion_estimate.markers_used:,} markers{limit_note})",
-                file=sys.stderr,
-            )
-    overdispersion_report["used"] = overdispersion
-    return ReadModelChoice(
-        overdispersion, background_rate, overdispersion_estimated, background_rate_estimated, overdispersion_report,
-        background_report,
+    some_records_without_bias = settings.min_bias_gain > 0 or settings.reject_bias_at_limit
+    without_bias = _read_model_from_estimate(
+        estimate_without_bias, requested_overdispersion, requested_background_rate,
+        used_for="for records called without a bias" if some_records_without_bias else None,
     )
+    starts = {}
+    if baseline.value is not None:
+        starts = dict(
+            start_background_rate=estimate_without_bias.background_rate, start_overdispersion=baseline.value
+        )
+    with_bias = _read_model_from_estimate(
+        estimate_read_model(
+            depths_by_marker, ploidies, estimate_settings, background_rates, overdispersions, parallel_map, **starts
+        ),
+        requested_overdispersion, requested_background_rate,
+        used_for="for records called with their bias" if some_records_without_bias else "",
+    )
+    # The estimate without a bias is reported beside the one with it; its "used" is null when
+    # no record is called with it.
+    for report, baseline_report in (
+        (with_bias.overdispersion_report, without_bias.overdispersion_report),
+        (with_bias.background_report, without_bias.background_report),
+    ):
+        if report["requested"] == AUTO:
+            report["without_bias"] = {
+                key: value if key != "used" or some_records_without_bias else None
+                for key, value in baseline_report.items() if key != "requested"
+            }
+    if some_records_without_bias:
+        with_bias.without_bias = without_bias
+    return with_bias
 
 
 def _background_rate(value: str) -> float:
@@ -3032,6 +3169,9 @@ def write_bias_table(prefix: str, outputs: Sequence[MarkerOutput]) -> Tuple[Opti
     """Write the fitted allelic biases, one row per record; return the path and a summary for the QC JSON.
 
     Nothing is written, and the summary is empty, when no bias was fitted.
+    The summary counts the records called without their fitted bias by
+    reason, and names those whose bias was rejected for ending at a limit of
+    the search.
     """
     bias_rows = [(output.clone_id, row) for output in outputs for row in output.bias_rows]
     if not bias_rows:
@@ -3040,19 +3180,26 @@ def write_bias_table(prefix: str, outputs: Sequence[MarkerOutput]) -> Tuple[Opti
     with bias_path.open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(
-            ["CloneID", "Position", "RecordID", "Bias", "LogLikelihood", "Gain", "Used", "BestStart", "Fits",
-             "Converged", "AtLimit"]
+            ["CloneID", "Position", "RecordID", "Bias", "LogLikelihood", "Gain", "Used", "Rejected", "BestStart",
+             "Fits", "Converged", "AtLimit"]
         )
         for clone_id, row in bias_rows:
             writer.writerow(
                 [clone_id, row.position, row.record_id, _decimal(row.bias), _decimal(row.objective, 3),
-                 _decimal(row.gain, 3), int(row.used), _decimal(row.best_start), row.fits, int(row.converged),
-                 int(row.at_limit)]
+                 _decimal(row.gain, 3), int(row.rejection is None), row.rejection or "", _decimal(row.best_start),
+                 row.fits, int(row.converged), int(row.at_limit)]
             )
     biases = sorted(row.bias for _, row in bias_rows)
     summary = {
         "records_fitted": len(biases),
-        "records_called_with_the_bias": sum(1 for _, row in bias_rows if row.used),
+        "records_called_with_the_bias": sum(1 for _, row in bias_rows if row.rejection is None),
+        "records_called_without_it": {
+            reason: sum(1 for _, row in bias_rows if row.rejection == reason)
+            for reason in (BIAS_REJECTED_FOR_GAIN, BIAS_REJECTED_AT_LIMIT)
+        },
+        "rejected_at_search_limit": [
+            f"{clone_id}:{row.position}" for clone_id, row in bias_rows if row.rejection == BIAS_REJECTED_AT_LIMIT
+        ],
         "median": round(biases[len(biases) // 2], 4),
         "outside_0.8_to_1.25": sum(1 for bias in biases if not 0.8 <= bias <= 1.25),
         "outside_0.67_to_1.5": sum(1 for bias in biases if not 2 / 3 <= bias <= 1.5),
@@ -3060,6 +3207,34 @@ def write_bias_table(prefix: str, outputs: Sequence[MarkerOutput]) -> Tuple[Opti
         "not_converged": sum(1 for _, row in bias_rows if not row.converged),
     }
     return bias_path, summary
+
+
+def _warn_about_biases_at_limit(bias_summary: Dict[str, object]) -> None:
+    """Say on stderr when fitted biases ended at a limit of the search (``write_bias_table``'s summary)."""
+    fitted = bias_summary.get("records_fitted", 0)
+    at_limit = bias_summary.get("at_search_limit", 0)
+    if not at_limit:
+        return
+    rejected = bias_summary["records_called_without_it"][BIAS_REJECTED_AT_LIMIT]
+    not_used = (
+        f" The {rejected:,} that gained enough to be used were not used: those records were called without a "
+        "bias, are marked in the bias table and are listed in the QC JSON."
+        if rejected else ""
+    )
+    if at_limit >= BIAS_AT_LIMIT_WARNING_SHARE * fitted:
+        print(
+            f"warning: {at_limit:,} of {fitted:,} fitted biases ended at a limit of the search.{not_used} Samples "
+            "with few heterozygotes give this, as inbred lines do, and a bias has nothing to correct in them: call "
+            "them with --allele-bias off, and with --selfing-rate if they are inbred",
+            file=sys.stderr,
+        )
+    elif rejected:
+        print(
+            f"warning: the fitted bias of {rejected:,} of {fitted:,} records ended at a limit of the search and "
+            "was not used; those records were called without a bias. They are marked in the bias table and "
+            "listed in the QC JSON; --allele-bias fit uses such a bias",
+            file=sys.stderr,
+        )
 
 
 def run_call(args: argparse.Namespace) -> int:
@@ -3119,6 +3294,7 @@ def run_call(args: argparse.Namespace) -> int:
         selfing_rate=args.selfing_rate,
         fit_allele_bias=args.allele_bias != "off",
         min_bias_gain=BIAS_AUTO_MIN_GAIN if args.allele_bias == "auto" else 0.0,
+        reject_bias_at_limit=args.allele_bias == "auto",
         tolerance=args.tol,
         max_iterations=args.max_iterations,
     )
@@ -3139,7 +3315,11 @@ def run_call(args: argparse.Namespace) -> int:
             target_depths, ploidies, model, args.overdispersion, args.background_rate, parallel_map
         )
         settings = dataclasses.replace(
-            model, overdispersion=read_model.overdispersion, background_rate=read_model.background_rate
+            model, overdispersion=read_model.overdispersion, background_rate=read_model.background_rate,
+            read_model_without_bias=(
+                (read_model.without_bias.overdispersion, read_model.without_bias.background_rate)
+                if read_model.without_bias is not None else None
+            ),
         )
         structure_report: Dict[str, object] = {}
         if args.prior == PRIOR_STRUCTURE:
@@ -3280,6 +3460,7 @@ def run_call(args: argparse.Namespace) -> int:
                 "frequencies settled",
                 file=sys.stderr,
             )
+    _warn_about_biases_at_limit(bias_summary)
     print(f"Wrote QC to {qc_path}", file=sys.stderr)
     return 0
 
@@ -3384,8 +3565,8 @@ def add_call_command(subparsers) -> None:
             "allelic bias, where one allele yields more reads per copy than the other: off (none assumed), fit "
             "(estimated for every record with two alleles, as in updog, and used) or auto (estimated the same "
             f"way, but used only for records where it raises the log-likelihood by {BIAS_AUTO_MIN_GAIN:g} or "
-            "more; the rest are called without it). fit and auto take several times as long and cannot be "
-            "combined with --prior structure (default: off)"
+            "more and does not end at a limit of the search; the rest are called without it). fit and auto "
+            "take several times as long and cannot be combined with --prior structure (default: off)"
         ),
     )
     model.add_argument(

@@ -198,9 +198,82 @@ class AllelicBiasTests(unittest.TestCase):
         unused = call.call_record(unbiased, ploidies, with_margin)
         without = call.call_record(unbiased, ploidies, call.ModelSettings(overdispersion=60))
         self.assertEqual(unused.allele_biases, [1.0, 1.0])
-        self.assertEqual(unused.bias_fit, fitted.bias_fit._replace(used=False))
+        self.assertEqual(unused.bias_fit, fitted.bias_fit._replace(rejection=call.BIAS_REJECTED_FOR_GAIN))
+        self.assertFalse(unused.bias_fit.used)
         self.assertEqual(unused.posteriors, without.posteriors)
         self.assertEqual(unused.allele_frequencies, without.allele_frequencies)
+
+    def test_a_bias_at_a_limit_of_the_search_is_not_used_when_that_is_asked(self):
+        # Inbred samples: none is heterozygous, so a bias has nothing to correct.  Under a
+        # prior that expects heterozygotes the fit runs to a limit of the search, where
+        # samples with all their reads on one allele pass for one to three copies.
+        table = simulated_two_allele_markers(
+            40, 4, markers=1, samples=150, genotypes="inbred", background_rate=0.005, seed=3
+        )[0]
+        ploidies = [4] * 150
+        with_margin = dict(
+            overdispersion=40, background_rate=0.005, fit_allele_bias=True, min_bias_gain=call.BIAS_AUTO_MIN_GAIN
+        )
+
+        def called_heterozygous(result):
+            dosages = [max(range(5), key=lambda dosage: sample[1][dosage]) for sample in result.posteriors]
+            return sum(0 < dosage < 4 for dosage in dosages)
+
+        used = call.call_record(table, ploidies, call.ModelSettings(**with_margin))
+        self.assertTrue(used.bias_fit.at_limit)
+        self.assertGreater(used.bias_fit.gain, call.BIAS_AUTO_MIN_GAIN)
+        self.assertTrue(used.bias_fit.used)
+        self.assertGreater(called_heterozygous(used), 30)
+        # With the rule the fit is reported as it was and the record is called without a bias.
+        rejected = call.call_record(table, ploidies, call.ModelSettings(**with_margin, reject_bias_at_limit=True))
+        without = call.call_record(table, ploidies, call.ModelSettings(overdispersion=40, background_rate=0.005))
+        self.assertEqual(rejected.bias_fit, used.bias_fit._replace(rejection=call.BIAS_REJECTED_AT_LIMIT))
+        self.assertFalse(rejected.bias_fit.used)
+        self.assertEqual(rejected.allele_biases, [1.0, 1.0])
+        self.assertEqual(rejected.posteriors, without.posteriors)
+        self.assertLess(called_heterozygous(rejected), 3)
+        # A fitted bias inside the limits is not touched by the rule.
+        biased = simulated_two_allele_markers(60, 4, markers=1, samples=150, bias=0.5, seed=21)[0]
+        inside = call.call_record(
+            biased, ploidies,
+            call.ModelSettings(overdispersion=60, fit_allele_bias=True, min_bias_gain=call.BIAS_AUTO_MIN_GAIN,
+                               reject_bias_at_limit=True),
+        )
+        self.assertFalse(inside.bias_fit.at_limit)
+        self.assertTrue(inside.bias_fit.used)
+
+    def test_a_record_without_its_bias_is_called_under_the_read_model_without_a_bias(self):
+        ploidies = [4] * 150
+        with_bias = dict(overdispersion=60, background_rate=0.001, fit_allele_bias=True,
+                         min_bias_gain=call.BIAS_AUTO_MIN_GAIN, reject_bias_at_limit=True)
+        two_models = call.ModelSettings(**with_bias, read_model_without_bias=(25.0, 0.004))
+        plain = call.ModelSettings(overdispersion=25.0, background_rate=0.004)
+        self.assertEqual(two_models.without_bias(), plain)
+        self.assertEqual(
+            call.ModelSettings(**with_bias).without_bias(), call.ModelSettings(overdispersion=60, background_rate=0.001)
+        )
+        # A record that gives its bias up is exactly the record of a run that fits none.
+        unbiased = simulated_two_allele_markers(60, 4, markers=1, samples=150, seed=9)[0]
+        rejected = call.call_record(unbiased, ploidies, two_models)
+        without = call.call_record(unbiased, ploidies, plain)
+        self.assertEqual(rejected.bias_fit.rejection, call.BIAS_REJECTED_FOR_GAIN)
+        self.assertEqual(rejected.posteriors, without.posteriors)
+        self.assertEqual(rejected.log_likelihoods, without.log_likelihoods)
+        self.assertEqual(rejected.allele_frequencies, without.allele_frequencies)
+        # The fit itself, and so the decision, is made under the read model with the bias.
+        one_model = call.ModelSettings(**with_bias)
+        self.assertEqual(rejected.bias_fit, call.call_record(unbiased, ploidies, one_model).bias_fit)
+        # A record that keeps its bias does not see the other read model.
+        biased = simulated_two_allele_markers(60, 4, markers=1, samples=150, bias=0.5, seed=21)[0]
+        kept = call.call_record(biased, ploidies, two_models)
+        self.assertTrue(kept.bias_fit.used)
+        self.assertEqual(kept.posteriors, call.call_record(biased, ploidies, one_model).posteriors)
+        # A record with more than two alleles gets no bias, and is called without one.
+        three_alleles = [[20, 10, 5], [0, 30, 6], [14, 0, 20]] * 5
+        self.assertEqual(
+            call.call_record(three_alleles, [4] * 15, two_models).posteriors,
+            call.call_record(three_alleles, [4] * 15, plain).posteriors,
+        )
 
     def test_the_margin_cannot_be_negative(self):
         with self.assertRaisesRegex(ValueError, "min_bias_gain"):
@@ -1565,7 +1638,100 @@ class CommandBehaviourTests(CommandTestCase):
             self.assertEqual(record["samples"], without_record["samples"])
         summary = self.qc["allele_bias"]
         self.assertEqual((summary["records_fitted"], summary["records_called_with_the_bias"]), (6, 3))
+        self.assertEqual(summary["records_called_without_it"], {"gain_below_margin": 3, "at_search_limit": 0})
+        self.assertEqual(summary["rejected_at_search_limit"], [])
+        self.assertEqual([row["Rejected"] for row in table], [""] * 3 + ["gain_below_margin"] * 3)
+        self.assertNotIn("limit of the search", self.stderr)
         self.assertEqual(self.qc["parameters"]["allele_bias"], "auto")
+
+    def test_allele_bias_auto_rejects_a_bias_at_a_limit_of_the_search_and_says_so(self):
+        # Inbred samples under the Hardy-Weinberg prior: every fitted bias ends at a limit.
+        inbred = simulated_two_allele_markers(
+            40, 4, markers=4, samples=120, genotypes="inbred", background_rate=0.005, seed=3
+        )
+        madc = self.madc_from_simulation(inbred)
+        options = ("--ploidy", "4", "--overdispersion", "40", "--background-rate", "0.005")
+        without_records = self.vcf(self.call_madc(madc, *options), "target")[2]
+
+        prefix = self.call_madc(madc, *options, "--allele-bias", "auto")
+        header, _, records = self.vcf(prefix, "target")
+        self.assertTrue(any("does not end at a limit of the search" in line for line in header))
+        with open(str(prefix) + ".bias.csv", newline="") as handle:
+            table = list(csv.DictReader(handle))
+        self.assertEqual(
+            [(row["AtLimit"], row["Used"], row["Rejected"]) for row in table], [("1", "0", "at_search_limit")] * 4
+        )
+        for row in table:
+            self.assertGreater(float(row["Gain"]), call.BIAS_AUTO_MIN_GAIN)
+        # The records are those of a run without a bias, marked, with the fitted bias still reported.
+        for record, without_record in zip(records, without_records):
+            self.assertEqual(record["samples"], without_record["samples"])
+            self.assertIn("BIASUNUSED", record["INFO"].split(";"))
+            self.assertIn("BIAS=", record["INFO"])
+        summary = self.qc["allele_bias"]
+        self.assertEqual((summary["records_called_with_the_bias"], summary["at_search_limit"]), (0, 4))
+        self.assertEqual(summary["records_called_without_it"], {"gain_below_margin": 0, "at_search_limit": 4})
+        self.assertEqual(summary["rejected_at_search_limit"], [f"M{number:03d}:12" for number in range(4)])
+        self.assertIn("4 of 4 fitted biases ended at a limit of the search. The 4 that gained enough", self.stderr)
+        self.assertIn("Samples with few heterozygotes give this", self.stderr)
+
+        # --allele-bias fit keeps such a bias, and warns that most of them are at a limit.
+        fit_prefix = self.call_madc(madc, *options, "--allele-bias", "fit")
+        with open(str(fit_prefix) + ".bias.csv", newline="") as handle:
+            fit_table = list(csv.DictReader(handle))
+        self.assertEqual([(row["AtLimit"], row["Used"], row["Rejected"]) for row in fit_table], [("1", "1", "")] * 4)
+        self.assertEqual(self.qc["allele_bias"]["records_called_with_the_bias"], 4)
+        self.assertEqual(self.qc["allele_bias"]["rejected_at_search_limit"], [])
+        self.assertNotIn("were not used", self.stderr)
+        self.assertIn("4 of 4 fitted biases ended at a limit of the search. Samples with few", self.stderr)
+        fit_records = self.vcf(fit_prefix, "target")[2]
+        self.assertNotEqual(
+            [record["samples"] for record in fit_records], [record["samples"] for record in without_records]
+        )
+
+    def test_allele_bias_auto_calls_a_record_without_its_bias_as_a_run_without_a_bias_does(self):
+        biased = simulated_two_allele_markers(60, 4, markers=10, samples=60, bias=0.5, seed=8)
+        unbiased = simulated_two_allele_markers(60, 4, markers=10, samples=60, seed=9)
+        madc = self.madc_from_simulation(biased + unbiased)
+        off_records = self.vcf(self.call_madc(madc, "--ploidy", "4"), "target")[2]
+        off_model = (self.qc["overdispersion"]["used"], self.qc["background_rate"]["used"])
+        self.assertNotIn("without_bias", self.qc["overdispersion"])
+
+        prefix = self.call_madc(madc, "--ploidy", "4", "--allele-bias", "auto")
+        records = self.vcf(prefix, "target")[2]
+        overdispersion, background = self.qc["overdispersion"], self.qc["background_rate"]
+        # The run has two read models.  Records called without a bias have the one a run
+        # without a bias estimates; with the biases fitted, less scatter is left to explain.
+        self.assertEqual((overdispersion["without_bias"]["used"], background["without_bias"]["used"]), off_model)
+        self.assertGreater(overdispersion["used"], off_model[0])
+        self.assertIn(
+            f"Estimated overdispersion: {off_model[0]:g} (from 20 markers), for records called without a bias",
+            self.stderr,
+        )
+        self.assertIn(f"Estimated overdispersion: {overdispersion['used']:g} (from 20 markers), for records called "
+                      "with their bias", self.stderr)
+        self.assertIn(
+            f"for records called without a bias, overdispersion {off_model[0]:g} and background-read rate "
+            f"{off_model[1]:g}",
+            self.model_line(prefix),
+        )
+        with open(str(prefix) + ".bias.csv", newline="") as handle:
+            table = list(csv.DictReader(handle))
+        # Most of the ten biased records keep their bias, and most of the ten others give it up.
+        self.assertGreaterEqual(sum(row["Used"] == "1" for row in table[:10]), 8)
+        self.assertGreaterEqual(sum(row["Used"] == "0" for row in table[10:]), 8)
+        without_bias = [index for index, row in enumerate(table) if row["Used"] == "0"]
+        for index in without_bias:
+            self.assertEqual(records[index]["samples"], off_records[index]["samples"])
+
+        # With fit every record uses its bias, so there is one read model; the estimate
+        # without a bias, from which its search started, is reported as not used.
+        self.call_madc(madc, "--ploidy", "4", "--allele-bias", "fit")
+        fit_overdispersion = self.qc["overdispersion"]
+        self.assertEqual(fit_overdispersion["used"], overdispersion["used"])
+        self.assertEqual(fit_overdispersion["without_bias"]["estimate"], off_model[0])
+        self.assertIsNone(fit_overdispersion["without_bias"]["used"])
+        self.assertNotIn("for records called", self.stderr)
 
     def test_overdispersion_auto_falls_back_for_inbred_samples(self):
         table = simulated_two_allele_markers(20, 2, markers=30, samples=60, genotypes="inbred")

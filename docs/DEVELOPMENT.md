@@ -2909,9 +2909,9 @@ same; `--prior norm --allele-bias fit` on updog's F1 table gives 93.9% where
   margin of 10, so every one is used. A bias changes the expected read
   fraction of the heterozygous dosages only; pushed to the limit under a
   prior that expects heterozygotes, it lets samples with all their reads on
-  one allele pass for one to three copies. With `hwe`, 2,222 of 6,965 samples without the
-  allele are called with one to three copies, where the run without a bias
-  miscalls 208.
+  one allele pass for one to three copies. With `hwe`, 2,222 of 6,965
+  samples without the allele are called with one to three copies, where the
+  run without a bias miscalls 208.
 
 For inbred lines the setting that matters is the selfing rate. The two inbred
 tables with `--prior hwe`, and how many of the 100 records ended at a limit
@@ -2951,7 +2951,89 @@ It restores the inbred tables (98.7% and 98.5% with `--prior norm`) and costs
 0.1 points on both potato sets, where the few markers at a limit are strongly
 biased in truth. The share of records at a limit separates the cases without
 changing a call: 0.3 to 2.5% on the five real data sets and all of them on
-inbred lines. The rule is unchanged.
+inbred lines.
+
+The rule was then built (`ModelSettings.reject_bias_at_limit`): the gain on
+inbred lines was judged worth the 0.1 points on potato. Under `auto` a bias
+at a limit of the search is not used, `call` warns, the bias table gives the
+reason in a `Rejected` column and the QC JSON lists the records. `fit` still
+uses such a bias, and warns when a fifth or more of the fits end at a limit.
+
+**What `auto` changed on the unbiased hexaploid table, and the read model of
+a record called without its bias.** On the polyRAD hexaploid table `auto`
+used no record's bias and was still 1.85 points under `off`. The records were
+called exactly as without a bias, so the difference had to be in the two
+values every record shares, and it was: an overdispersion of 10 where `off`
+estimates 20, and a background rate of 0.0002 where it estimates 0.001. Run
+without a bias at each pair:
+
+| Overdispersion, background rate | Share of dosages right |
+|---|---|
+| 20, 0.001 (what `off` estimates) | 75.28% |
+| 10, 0.0002 (what the run with a bias estimated) | 73.43%, the figure of `auto` |
+| 10, 0.001 | 73.55% |
+| 20, 0.0002 | 75.15% |
+
+The overdispersion accounts for 1.7 of the 1.85 points. It was not a better
+fit of a different model but a search that stopped early. Log-likelihood of
+the markers the estimate uses, at the better background rate for each value:
+
+| Overdispersion | Without a bias | With every record's bias fitted |
+|---|---|---|
+| 10 | −77,432 | −77,294 |
+| 20 | −77,297 | −77,189 |
+
+With the bias fitted too, 20 is more probable than 10 by 105. The estimate
+calls every marker at the current overdispersion, holds each marker's allele
+frequency, dosage weights and bias, scores every overdispersion with them,
+and repeats from the best until the choice stops changing. With a bias and
+seven dosage weights fitted at 10 and held, 10 scored best, so started from
+polyRAD's 9 the search moved to 10 and stayed. Two changes followed:
+
+- The estimate with a bias now starts from the estimate without one. On this
+  table it then finds 20, and `fit` goes from 71.75% to 73.78% (73.88% under
+  the read model of `off`, so 1.4 of its 3.5 points under `off` are the
+  biases themselves).
+- Under `auto`, a record called without its bias is called with the estimate
+  made without a bias, exactly as `off` calls it; only the records that keep
+  their bias use the estimate made with the bias fitted. On this table `auto`
+  then has the genotypes of `off`.
+
+Four ways of choosing the read model under `auto` were compared, each with
+the limit rule, `--prior hwe`. Share of dosages right, and in brackets how
+far the mean probability `call` gives its called dosage lies above that share
+(positive: over-confident):
+
+| Table | Every record under the estimate with every bias fitted (as before) | Records without their bias under the estimate without a bias (built) | Every record under the estimate without a bias | One estimate that applies the rule itself |
+|---|---|---|---|---|
+| 4x random mating, biased | 85.35% (+2.3) | 85.00% (−1.2) | 84.02% (−1.1) | 84.02% (−1.1) |
+| updog 4x random mating, biased | 96.14% (+0.6) | 95.94% (−0.6) | 93.14% (−3.0) | |
+| updog 4x random mating, biased, low depth | 83.02% (+2.8) | 82.82% (0.0) | 79.94% (+0.8) | |
+| updog 4x F1, biased | 90.53% (+5.8) | 90.65% (+4.6) | 87.99% (+2.6) | |
+| updog 6x random mating, biased | 83.84% (+4.2) | 83.04% (−0.2) | | |
+| 4x two subpopulations | 88.57% (+2.8) | 88.45% (+2.2) | | |
+| polyRAD 4x, inbreeding 0.5 | 92.94% (+2.4) | 92.53% (+2.0) | | |
+| 4x random mating | 89.49% (+1.0) | 89.49% (+0.1), as `off` | | |
+| Potato, 85 clones, against the array | 96.34% | 96.37% | 96.41% | 96.34% |
+| Potato vendor MADC | 91.80% | 91.76% | 91.47% | 91.80% |
+| Delta smelt targets | 99.27% | 99.27% | 99.28% | 99.27% |
+| Pooled tetraploids, 50 reads | 90.46% | 90.46% | 90.46% | 90.46% |
+| Pooled hexaploids, 50 reads | 77.60% | 77.60% | 77.60% | 77.60% |
+
+- Refitting the read model is worth having for the records that keep their
+  bias: with every record under the estimate without a bias, 1 to 3 points
+  are lost on the biased simulated tables and 0.3 on the vendor MADC.
+- One estimate that applies the rule itself did not move from where it
+  started. Started from the estimate without a bias, few biases gain the
+  margin under its wide scatter, so the scatter stays wide (first row).
+- For the records called without their bias, the estimate with every bias
+  fitted is between 0.1 points worse and 0.8 better on the simulated tables
+  and no better on the real data. It is over-confident on every simulated
+  table, by 0.6 to 5.8 points; with the estimate without a bias the four
+  random-mating tables with bias are within 1.2 points and the table
+  without bias within 0.1, as `off` is. The estimate without a bias was
+  built for them: a record `auto` leaves without a bias is then the record
+  `off` writes, on every table.
 
 **The structure prior (`--prior structure`).** polyRAD's `IteratePopStruct`
 gives each sample its own allele frequencies: it runs a principal component

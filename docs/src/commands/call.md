@@ -41,7 +41,7 @@ no allelic bias. Change them when one of these describes your samples:
 
 | Your samples | Use | What it changed |
 |--------------|-----|-----------------|
-| Polyploids on an amplicon panel such as DArTag | `--allele-bias auto` | 85 tetraploid potato clones: 92.3% to 96.5% of dosages matching a SNP array |
+| Polyploids on an amplicon panel such as DArTag | `--allele-bias auto` | 85 tetraploid potato clones: 92.3% to 96.4% of dosages matching a SNP array |
 | Families (F1, half-sibs) | `--prior norm`, and `--allele-bias auto` for polyploids | Simulated tetraploid F1 on a biased panel: 81.6% with the defaults, 93.8% with both |
 | Subpopulations or families at 25 reads or fewer | `--prior structure` | Simulated tetraploids: 0.8 to 5.5 points at 8 reads, 0.5 to 2.5 at 25 |
 | Inbred lines, doubled haploids, selfing species | `--selfing-rate 0.95` to `0.99`, and no bias | Simulated inbred tetraploids: 97.4% to 99.6–99.9% |
@@ -51,7 +51,8 @@ Three things to know before changing them:
 - **A bias matters only where there are heterozygotes.** It changes the read fraction a
   heterozygous genotype is expected to show, and nothing else. Diploids, with one heterozygous
   class, moved by −0.1 to +0.6 points with it; tetraploid potato gained 4 to 5. Inbred lines gain
-  nothing and lose accuracy, with `fit` and `auto` alike (see [Allelic bias](#allelic-bias)).
+  nothing: `fit` miscalls a quarter of their genotypes, and `auto` leaves them as without a bias
+  and warns (see [Allelic bias](#allelic-bias)).
 - **The other priors and the bias cost time.** `norm` and `structure` take two to five times as
   long as `hwe`, and a fitted bias seven to eight times.
 - **The QC JSON says how a run with a bias went.** `allele_bias.records_called_with_the_bias` was
@@ -284,9 +285,12 @@ them.
   sampling of reads would.
 - A table with fewer than 100 sample-by-marker cells with reads is too small to estimate from;
   `call` says so and uses an overdispersion of 9 and a background rate of 0.002.
-- With `--allele-bias fit` or `auto` the estimate fits the bias too. Without it, biased markers look like
-  scatter and the overdispersion comes out lower (30 and 40 against 150 on the two alfalfa
-  populations).
+- With `--allele-bias fit` or `auto` there is a second estimate, which fits every record's bias.
+  Without the bias, biased markers look like scatter and the overdispersion comes out lower (30
+  and 40 against 150 on the two alfalfa populations). `fit` calls every record with the second
+  estimate. `auto` calls with it the records that keep their bias, and the others with the first.
+  The QC JSON has the first under `without_bias` in the `overdispersion` and `background_rate`
+  blocks.
 - This is not polyRAD's `TestOverdispersion`, which on simulated tetraploid and hexaploid counts
   chose values well below the true one.
 
@@ -301,12 +305,22 @@ without regard to this, such a marker gets shifted dosages. `--allele-bias fit` 
 of every record with two alleles (targets, and off-target sites with two bases) and calls with it.
 Haplotype records and sites with three or more bases are called without a bias.
 
-`--allele-bias auto` fits the bias in the same way and then calls with it only the records where
-it raises the log-likelihood of the read counts, after the prior on the bias, by 10 or more over
-no bias. The other records are called exactly as without a bias. A bias fitted to a marker that
-has none follows the noise in its counts and costs accuracy, most of all in hexaploids, and this
-leaves such markers alone. The overdispersion and background rate are estimated as with `fit`.
-The rule is MADCATS's own; updog always uses the bias it fits.
+`--allele-bias auto` fits the bias in the same way and then calls with it only the records that
+pass two rules. The other records are called without a bias:
+
+- **The bias must gain enough.** It has to raise the log-likelihood of the read counts, after the
+  prior on the bias, by 10 or more over no bias. A bias fitted to a marker that has none follows
+  the noise in its counts and costs accuracy, most of all in hexaploids.
+- **The bias must not end at a limit of the search** (0.14 or 7.4). Samples with few
+  heterozygotes, such as inbred lines, drive the fit to a limit, where homozygous samples pass for
+  heterozygous ones. `call` warns when it rejects a bias for this, marks the record in the bias
+  table and lists it in the QC JSON. `--allele-bias fit` uses such a bias.
+
+A record called without a bias is called exactly as `--allele-bias off` calls it, with the
+overdispersion and background rate estimated without a bias. Only the records that keep their bias
+use the read model estimated with the bias fitted, which is the one `fit` uses for every record.
+The VCF header and the QC JSON give both. Both rules are MADCATS's own; updog always uses the bias
+it fits.
 
 Every two-allele record carries its fitted bias in `INFO/BIAS` with `fit` and with `auto` alike,
 so the records can be filtered on it afterwards whichever was used. With `auto`, a record whose
@@ -338,23 +352,22 @@ When to fit it, from read counts drawn with updog's and polyRAD's own simulators
 alfalfa populations, potato clones that also have SNP-array genotypes, delta smelt and polyploids
 pooled from smelt reads (the tables are in the development record):
 
-- If you do not know whether a panel is biased, use `auto`, unless the samples are inbred lines
-  (below). Share of genotypes right with
+- If you do not know whether a panel is biased, use `auto`. Share of genotypes right with
   `--prior hwe`:
 
   | Data | `off` | `fit` | `auto` |
   |---|---|---|---|
-  | Potato, 85 tetraploid clones, against a SNP array | 92.3% | 96.6% | 96.5% |
-  | Potato vendor MADC, tetraploids | 86.4% | 91.3% | 91.2% |
-  | Potato vendor MADC, diploids | 92.0% | 92.6% | 92.6% |
+  | Potato, 85 tetraploid clones, against a SNP array | 92.3% | 96.6% | 96.4% |
+  | Potato vendor MADC, tetraploids | 86.4% | 91.3% | 91.1% |
+  | Potato vendor MADC, diploids | 92.0% | 92.6% | 92.5% |
   | Tetraploids pooled from real diploid reads, 50 reads | 90.6% | 89.7% | 90.5% |
   | Hexaploids pooled from real diploid reads, 50 reads | 77.6% | 69.8% | 77.6% |
   | Delta smelt (diploid), against alignment-based genotypes | 99.4% | 99.3% | 99.3% |
 
   On the potato data half to two thirds of the records are called with their bias; on the pooled
-  reads, which have none, about 3 in 100 are. `auto` takes as long as `fit`. It is not the default
-  because of that time, and because on the smelt data it stays 0.1 points under `off`: there the
-  loss comes with the read model that a run with a bias estimates, not with the biases used.
+  reads, which have none, fewer than 2 in 100 are. `auto` takes as long as `fit`. It is not the
+  default because of that time, and because on the smelt data it stays 0.1 points under `off`:
+  there 127 of 946 records keep a bias and are called a little worse with it.
 
 - For families, use it with `--prior norm`. With `--prior hwe`, `fit` lost up to 4 points on
   simulated F1 families without bias, which `auto` avoided; on simulated F1 families with bias
@@ -371,25 +384,25 @@ pooled from smelt reads (the tables are in the development record):
   89.1% to 91.9%, where the study's genotypes have 91.8%.
 - On real diploid reads (96 delta smelt) it lowered agreement with alignment-based genotypes by
   0.15 points at targets and 0.3 at off-target SNPs.
-- On outbred tetraploid data without bias `fit` cost up to 1.5 points. `auto` cost under 0.1 in one
-  population or an F1 family, and 0.2 to 1.2 in two subpopulations.
+- On outbred tetraploid data without bias `fit` cost up to 1.5 points. `auto` cost nothing in one
+  population or an F1 family, where it kept no bias and has the genotypes of `off`, and 1.4 points
+  in two subpopulations with `--prior hwe`, where it kept 9 of 100.
 - `auto` needs depth and a clear bias to keep it. On updog-simulated biased tetraploids at 150
-  reads it kept three quarters of the biases and was level with `fit` (96.1% against 96.2%, from
-  82.3% without a bias). At 25 reads it kept 4 in 10 and was 1.6 points behind (83.0% against
-  84.6%, from 76.3%). On hexaploids at 150 reads it kept half and was 2.7 behind (83.8% against
+  reads it kept three quarters of the biases and was 0.3 points behind `fit` (95.9% against 96.2%,
+  from 82.3% without a bias). At 25 reads it kept 4 in 10 and was 1.8 points behind (82.8% against
+  84.6%, from 76.3%). On hexaploids at 150 reads it kept half and was 3.5 behind (83.0% against
   86.5%, from 67.3%).
-- Do not fit it for inbred lines, with `fit` or with `auto`. A bias changes only what a
-  heterozygote shows, so there is nothing for it to correct, and under a prior that expects
-  heterozygotes the fit runs to the limit of the search, where homozygous samples pass for
-  heterozygous ones. On simulated inbred tetraploids every record's bias ended at the limit and
-  `auto` kept them all: 71.7% of dosages were right against 97.4% without a bias (90.3% against
-  98.6% with `--prior norm`). Give `--selfing-rate` instead: 99.6% at 0.95 and 99.9% at 0.99.
-  Samples that are half inbred are safe with `auto` (92.9% against 93.2% without a bias, where
-  `fit` had 90.7%).
-- Check the result in hexaploids with widely scattered counts. On one such simulated table
-  without bias `fit` lost 3.5 to 10 points, as updog lost them, and `auto` 1.9 to 3.2 although it
-  used no record's bias: the loss comes with the read model that a run with a bias estimates. On
-  hexaploids pooled from real reads `auto` lost nothing.
+- Do not use `fit` for inbred lines. A bias changes only what a heterozygote shows, so there is
+  nothing for it to correct, and under a prior that expects heterozygotes the fit runs to a limit
+  of the search, where homozygous samples pass for heterozygous ones. On simulated inbred
+  tetraploids every record's bias ended at a limit: with `fit`, 71.7% of dosages were right
+  against 97.4% without a bias (90.3% against 98.6% with `--prior norm`). `auto` rejects such a
+  bias, warns, and has the genotypes of a run without a bias. Either way, give `--selfing-rate`:
+  99.6% at 0.95 and 99.9% at 0.99. Samples that are half inbred lost 0.7 points with `auto`, where
+  `fit` lost 2.4.
+- Check `fit` in hexaploids with widely scattered counts. On one such simulated table without
+  bias it lost 1.5 points with `--prior hwe`, where `auto` kept no bias and lost nothing. On
+  hexaploids pooled from real reads `auto` lost nothing either.
 
 ## Filters
 
@@ -427,8 +440,8 @@ madcats call --madc results/panel_MADC.csv --output-prefix results/panel \
 |------|----------|
 | `PREFIX.targets.vcf`, `PREFIX.all.vcf`, `PREFIX.haplotypes.vcf` | The VCFs chosen with `--vcf` (VCF 4.3, uncompressed) |
 | `PREFIX.haplotypes.alleles.csv` | With `--vcf haplotype`: for each marker and allele number, the MADC AlleleIDs it was counted from, its sequence and its total reads |
-| `PREFIX.bias.csv` | With `--allele-bias fit` or `auto`: for each fitted record, the fitted bias of the reference allele, the log-likelihood at that bias (after the prior on the bias), what the bias gained over no bias, whether the genotypes were called with it (always with `fit`), the starting value the search continued from, the number of bias values tried, and whether the fit converged or ended at a search limit |
-| `PREFIX.qc.json` | Parameters, the model in words, the overdispersion and background-rate estimates, the number of neighbours chosen for the structure prior, a summary of the fitted biases, samples per ploidy, and per VCF: records, genotypes called and missing by reason, reads used and excluded, records that did not converge, targets skipped by reason |
+| `PREFIX.bias.csv` | With `--allele-bias fit` or `auto`: for each fitted record, the fitted bias of the reference allele, the log-likelihood at that bias (after the prior on the bias), what the bias gained over no bias (`Gain`), whether the genotypes were called with it (`Used`; always with `fit`) and if not why (`Rejected`: `gain_below_margin` or `at_search_limit`), the starting value the search continued from, the number of bias values tried, and whether the fit converged or ended at a search limit |
+| `PREFIX.qc.json` | Parameters, the model in words, the overdispersion and background-rate estimates (with a bias fitted, also the estimates made without one), the number of neighbours chosen for the structure prior, a summary of the fitted biases (how many records were called with their bias, how many without and why, and which were rejected at a search limit), samples per ploidy, and per VCF: records, genotypes called and missing by reason, reads used and excluded, records that did not converge, targets skipped by reason |
 
 ### VCF fields
 
@@ -445,7 +458,7 @@ madcats call --madc results/panel_MADC.csv --output-prefix results/panel \
 | `MPC` | records with more than two alleles; every haplotype record | Lowest marginal posterior among the called dosages |
 | `INFO/TARGET` | `target`, `all` | The record is a marker's designed variant |
 | `INFO/BIAS` | two-allele records, with `--allele-bias fit` or `auto` | Fitted allelic bias of the reference allele, as updog reports it for reference read counts |
-| `INFO/BIASUNUSED` | two-allele records, with `--allele-bias auto` | The record's genotypes were called without its fitted bias, which gained less than the margin |
+| `INFO/BIASUNUSED` | two-allele records, with `--allele-bias auto` | The record's genotypes were called without its fitted bias, which gained less than the margin or ended at a limit of the search |
 | `INFO/NS` | all | Samples with a called genotype |
 | `INFO/AF` | all | Estimated frequency of each alternate allele |
 

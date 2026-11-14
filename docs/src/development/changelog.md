@@ -33,13 +33,24 @@ Notable changes by version. Measurements behind each change are in the
   lists each fit.
 - `call --allele-bias auto` fits the bias as `fit` does and calls with it only the records where
   it raises the log-likelihood of the read counts by 10 or more over no bias; the others are
-  called without one. Against `fit`, on potato it keeps the gain (96.5% against 96.6% of array
+  called without one. Against `fit`, on potato it keeps the gain (96.4% against 96.6% of array
   dosages matched) and on polyploids pooled from real diploid reads, which have no bias, it
   removes the loss (hexaploids at 50 reads: 77.6% right, as without a bias, against 69.8%). Every
   two-allele record still carries its fitted bias in `INFO/BIAS`; one called without it is flagged
-  `INFO/BIASUNUSED`. The bias table gains `Gain` and `Used` columns. It does not protect inbred
-  lines, where every fitted bias passes the rule: call those without a bias and with
-  `--selfing-rate`.
+  `INFO/BIASUNUSED`. The bias table gains `Gain`, `Used` and `Rejected` columns.
+- `call --allele-bias auto` does not use a bias that ends at a limit of the search. Samples with
+  few heterozygotes, such as inbred lines, drive every fit to a limit, where homozygous samples
+  pass for heterozygous ones: on simulated inbred tetraploids 71.7% of dosages were right with
+  such biases used and 97.4% without. `call` warns, marks the records in the bias table and lists
+  them in the QC JSON. `--allele-bias fit` still uses such a bias, and warns when a fifth or more
+  of the fits end at a limit.
+- With `auto`, a record called without its bias is called exactly as `--allele-bias off` calls it,
+  under the overdispersion and background rate estimated without a bias. Before, it was called
+  under the read model estimated with every bias fitted, which cost 1.9 points on a simulated
+  hexaploid table where no record kept its bias.
+- The read-model estimate with a bias fitted starts from the estimate made without one. Started
+  from a fixed value, its search could stop early: on that hexaploid table it chose an
+  overdispersion of 10 where 20 is far more probable.
 - `call` estimates a background-read rate (`--background-rate auto`, the default) together with
   the overdispersion: the share of reads that show an allele they did not come from. It replaces
   polyRAD's contamination rate, which is now 0 unless set, because contamination cannot account for
