@@ -37,14 +37,19 @@ contig in the header, and a `##madcatsCoordinates` line says so.
 
 The defaults suit one outbred population or a diversity panel, diploid or autopolyploid: the
 Hardy-Weinberg prior, an overdispersion and a background-read rate estimated from the table, and
-no allelic bias. Change them when one of these describes your samples:
+no allelic bias. Two kinds of samples do clearly better with a change:
 
 | Your samples | Use | What it changed |
 |--------------|-----|-----------------|
 | Polyploids on an amplicon panel such as DArTag | `--allele-bias auto` | 85 tetraploid potato clones: 92.3% to 96.4% of dosages matching a SNP array |
-| Families (F1, half-sibs) | `--prior norm`, and `--allele-bias auto` for polyploids | Simulated tetraploid F1 on a biased panel: 81.6% with the defaults, 93.8% with both |
-| Subpopulations or families at 25 reads or fewer | `--prior structure` | Simulated tetraploids: 0.8 to 5.5 points at 8 reads, 0.5 to 2.5 at 25 |
-| Inbred lines, doubled haploids, selfing species | `--selfing-rate 0.95` to `0.99`, and no bias | Simulated inbred tetraploids: 97.4% to 99.6–99.9% |
+| Inbred lines, doubled haploids, selfing species | `--selfing-rate 0.95` to `0.99` | Simulated inbred tetraploids: 97.4% to 99.6–99.9% |
+
+Two other priors helped under particular conditions and not otherwise:
+
+| Your samples | Consider | Where it helped | Where it did not |
+|--------------|----------|-----------------|------------------|
+| Families (F1, half-sibs) | `--prior norm` | Simulated tetraploid F1 families: 1.2 points, and 1 to 6 points with a bias fitted. Two F1 populations at about 10 reads: error 0.186 against 0.200, and 0.385 against 0.409 | Alfalfa and potato families at high read depth: from 0.8 points below `hwe` to 0.2 above. One population: up to 0.7 below |
+| Subpopulations or families at 25 reads or fewer | `--prior structure` | Simulated tetraploids: 0.8 to 5.5 points at 8 reads, 0.5 to 2.5 at 25. Potato clones of ten families thinned to 10 and 25 reads: 0.9 and 0.7 points | The same potato clones at 300 reads: no gain. It cannot be combined with a fitted bias or a selfing rate |
 
 Three things to know before changing them:
 
@@ -56,9 +61,12 @@ Three things to know before changing them:
 - **The other priors and the bias cost time.** `norm` and `structure` take two to five times as
   long as `hwe`, and a fitted bias seven to eight times.
 - **The QC JSON says how a run with a bias went.** `allele_bias.records_called_with_the_bias` was
-  half to two thirds of the records on the potato data, 14 in 100 on diploid smelt and 3 in 100 on
-  polyploids pooled from reads without bias. `allele_bias.at_search_limit` was 3 in 100 or fewer
-  on every real data set tested, and every record on simulated inbred lines.
+  half to two thirds of the records on the potato data, 13 in 100 on diploid smelt and fewer than
+  2 in 100 on polyploids pooled from reads without bias. `allele_bias.at_search_limit` was 3 in
+  100 or fewer on every real data set tested, and every record on simulated inbred lines.
+
+The measurements behind this section are in
+[Validation & Accuracy](../reference/validation.md#genotype-calling-call).
 
 ### The genotype model
 
@@ -84,15 +92,22 @@ on its own, against all the other alleles together:
    change by no more than `--tol`, or `--max-iterations` is reached. Each record converges on its
    own.
 
-The Hardy-Weinberg prior assumes random mating and that every chromosome copy is drawn
-independently, which holds for diploids and autopolyploids. It is not the expectation under
-disomic inheritance in an allopolyploid, in a biparental family, or when samples of different
-ploidy come from different populations. Use `--prior norm` or `--prior uniform` when it does not
-fit, or `--prior structure` when the samples come from several subpopulations or families and the
-read depth is low.
+All four priors apply to every VCF type.
 
-The norm prior makes no assumption about mating. Its dosage probabilities are proportional to a
-normal density at the dosages 0 to *P*, so it can be narrower than Hardy-Weinberg proportions (one
+**`hwe`** assumes random mating and that every chromosome copy is drawn independently, which holds
+for diploids and autopolyploids. It is not the expectation under disomic inheritance in an
+allopolyploid, in a biparental family, or when samples of different ploidy come from different
+populations.
+
+For inbred lines and partly selfing species, `--selfing-rate` adjusts it: a share of each
+generation comes from self-fertilisation, which moves prior probability from the intermediate
+dosages to the two homozygous ones (the equilibrium proportions of de Silva et al. 2005, as in
+polyRAD). At 1 only the two homozygous dosages have prior probability, so a heterozygote cannot be
+called; use a value just below 1, such as 0.99, to allow residual heterozygosity. It applies to
+samples of even ploidy; samples of odd ploidy keep random-mating proportions.
+
+**`norm`** makes no assumption about mating. Its dosage probabilities are proportional to a normal
+density at the dosages 0 to *P*, so it can be narrower than Hardy-Weinberg proportions (one
 family) or wider (subpopulations), and when the dosages have two peaks (inbred lines) it flattens
 out. It is updog's `norm` genotype distribution, fitted the way updog fits it; with the same
 likelihood, `call` and updog reach the same prior and the same genotypes. It is fitted separately
@@ -100,7 +115,7 @@ for each ploidy among the samples, since a shape over the dosages of one ploidy 
 another. A ploidy with fewer than 10 samples uses Hardy-Weinberg proportions instead; `call` says
 so and lists those ploidies in the QC JSON. In a haplotype record every allele gets its own fit.
 
-The structure prior is for samples that are not one randomly mating population: subpopulations, a
+**`structure`** is for samples that are not one randomly mating population: subpopulations, a
 cline, or a set of families. It keeps Hardy-Weinberg proportions but gives each sample its own
 allele frequency in every record: the mean over the samples most like it (its neighbours), with
 the record's frequency over all samples counted as one more of them. A sample's own reads never
@@ -118,47 +133,13 @@ called:
 
 Records are then called one at a time as with the other priors, each first with the `hwe` prior
 and then with the neighbours. The number of neighbours used and the error of each number tried are
-in the QC JSON.
+in the QC JSON. The method is MADCATS's own, not a port of polyRAD's.
 
-- It matters at low read depth. On simulated tetraploids with 8 reads per sample and marker it
-  called 0.8 to 5.5 points more genotypes correctly than `hwe`, depending on how strong the
-  structure was; with 25 reads 0.5 to 2.5 points, and with 150 reads 0.8. On 85 potato clones from
-  ten families, thinned to 10 and 25 reads, the gain against SNP-array genotypes was 0.9 and 0.7
-  points; at their full depth of about 300 reads there was none.
-- Compared with polyRAD's `IteratePopStruct` on the same thirteen tables it called the same share
-  of genotypes correctly or more, by up to 0.7 points. On a table without structure polyRAD's
-  prior lost 3.4 points and `call` chose 0 neighbours.
 - It needs at least 20 samples and 100 markers with reads to compare samples on; below that it is
   the `hwe` prior, with a note.
 - It cannot be combined with `--allele-bias fit` or `auto`, or with `--selfing-rate`. These
   combinations have not been tested.
 - It takes two to three times as long as `--prior hwe`.
-- The method is MADCATS's own, not a port. polyRAD models structure with principal components;
-  that approach and a relationship-matrix predictor were tried in its place and were no better
-  (see the development record).
-
-All four priors apply to every VCF type. For the haplotype VCF, on simulated microhaplotype tables
-(3 to 6 alleles per marker, diploid and tetraploid; one population, groups and families):
-
-- `hwe` gave the same share of correct genotypes as polyRAD's HWE prior, to within 0.4 points.
-- `structure` was never below `hwe` and gained 1 to 4 points in tetraploids with groups or
-  families.
-- `norm` was never below `hwe`, gained at most 1.7 points, and took two to five times as long.
-- `uniform` was the lowest throughout, by up to 6 points.
-- With the default `--min-marginal-posterior`, 94 to 99% of the genotypes kept were right under
-  `hwe`, `norm` and `structure` alike.
-
-These are simulations with one simulator; there is no published accuracy baseline for haplotype
-calls to compare with, and no real haplotype data with known genotypes has been tested. The
-allelic bias is never fitted for haplotype records.
-
-For inbred lines and partly selfing species, `--selfing-rate` adjusts the Hardy-Weinberg prior: a
-share of each generation comes from self-fertilisation, which moves prior probability from the
-intermediate dosages to the two homozygous ones (the equilibrium proportions of de Silva et al.
-2005, as in polyRAD). At 1 only the two homozygous dosages have prior probability, so a
-heterozygote cannot be called; use a value just below 1, such as 0.99, to allow residual
-heterozygosity. It applies to samples of even ploidy; samples of odd ploidy keep random-mating
-proportions.
 
 ### What the model can and cannot say
 
@@ -269,15 +250,7 @@ used, and the log-likelihood of every value tried, are in the QC JSON, and the V
 them.
 
 - The estimate does not use `--prior`. It gives every dosage its own free probability at each
-  marker, because the estimate is only as good as the genotype proportions it assumes. With
-  Hardy-Weinberg proportions it was badly off for samples from two subpopulations, and with those
-  or the `norm` shape, neither of which can describe an excess of homozygotes, it failed for
-  inbred samples.
-- In simulated diploids and tetraploids with 20 or more reads per sample both values were
-  recovered (31 of 32 tables). In hexaploids the overdispersion was recovered in 12 of 16 tables
-  and read between 14 and 50 for a simulated 40 in the rest. With 6 to 25 reads per sample the
-  background rate was still recovered, an overdispersion of 40 read as 30 to 75, and one of 150
-  as anything from 100 to 500: scatter that small cannot be measured at that depth.
+  marker, because the estimate is only as good as the genotype proportions it assumes.
 - A table with no heterozygous samples and no stray reads has no scatter to measure: the
   overdispersion estimate ends at the lowest value tried, and `call` warns and uses 9. Inbred
   lines whose reads do include stray reads of the other allele can be estimated from those.
@@ -291,8 +264,6 @@ them.
   estimate. `auto` calls with it the records that keep their bias, and the others with the first.
   The QC JSON has the first under `without_bias` in the `overdispersion` and `background_rate`
   blocks.
-- This is not polyRAD's `TestOverdispersion`, which on simulated tetraploid and hexaploid counts
-  chose values well below the true one.
 
 To run polyRAD's model as polyRAD runs it:
 `--prior hwe --overdispersion 9 --contamination-rate 0.001 --background-rate 0`.
@@ -333,76 +304,38 @@ towards 0 with a normal prior of standard deviation 0.7, starts from updog's fiv
 (0.37 to 2.7) and keeps the fit with the highest log-likelihood after that prior. With the other
 settings equal, the fitted bias and the genotypes match updog's.
 
-- The bias is found by calling the record at a series of bias values, 17 or more. On 1,000 alfalfa
-  markers and 186 samples, calling took eight times as long on one worker (57 s against 7 s), and
-  the estimate of the overdispersion and background rate, which fits the bias for every pair of
-  values it tries, about 115 s against 17 s. The whole run, 170 s, was still 6.5 times as fast as
-  updog. The estimate does not grow with the table, and giving `--overdispersion` and
-  `--background-rate` as numbers skips it.
+- The bias is found by calling the record at a series of bias values, 17 or more, so a run with a
+  bias takes seven to eight times as long. The estimate of the read model does not grow with the
+  table, and giving `--overdispersion` and `--background-rate` as numbers skips it.
 - It is applied to the sample's own allele copies, and background reads are added afterwards.
   updog applies its sequencing error first. In this order, samples that do not carry an allele say
   nothing about its bias, which matters because the background rate is one value for the table.
 - The search covers biases from 0.14 to 7.4. A record whose fit ends at either limit is counted in
   the QC JSON and marked in the bias table; such a marker is usually not behaving as one locus.
 - The VCF carries the fitted bias as `INFO/BIAS`, and `PREFIX.bias.csv` lists every fitted record
-  with what its bias gained over no bias (`Gain`) and whether its genotypes were called with it
-  (`Used`). The QC JSON counts the records called with their bias.
+  with what its bias gained over no bias (`Gain`), whether its genotypes were called with it
+  (`Used`) and if not why (`Rejected`). The QC JSON counts the records called with their bias and
+  those called without it, by reason.
 
-When to fit it, from read counts drawn with updog's and polyRAD's own simulators, two tetraploid
-alfalfa populations, potato clones that also have SNP-array genotypes, delta smelt and polyploids
-pooled from smelt reads (the tables are in the development record):
+When to use it:
 
-- If you do not know whether a panel is biased, use `auto`. Share of genotypes right with
-  `--prior hwe`:
+- **Polyploids on an amplicon panel: `auto`.** It needs no knowledge of the panel. On potato it
+  raised agreement with a SNP array from 92.3% to 96.4%, where `fit` reached 96.6%; on polyploids
+  pooled from reads without bias it changed fewer than 2 records in 100 and cost 0.1 points or
+  less.
+- **A panel you know to be biased, at low depth: `fit`.** `auto` keeps a bias only where it is
+  clear, which takes depth. On simulated biased tetraploids it was 0.3 points behind `fit` at 150
+  reads and 1.8 behind at 25.
+- **Diploids: neither.** A bias moved accuracy by −0.1 to +0.6 points.
+- **Inbred lines: neither.** A bias has nothing to correct in them. `fit` miscalled a quarter of
+  their genotypes on simulated tables. `auto` rejects their biases and warns. Give
+  `--selfing-rate`.
+- **Families: with `--prior norm`.** On simulated F1 families with bias `norm` was 1 to 6 points
+  ahead of `hwe` under `fit` or `auto`; on real alfalfa and potato families the two priors were
+  within 0.2 points.
 
-  | Data | `off` | `fit` | `auto` |
-  |---|---|---|---|
-  | Potato, 85 tetraploid clones, against a SNP array | 92.3% | 96.6% | 96.4% |
-  | Potato vendor MADC, tetraploids | 86.4% | 91.3% | 91.1% |
-  | Potato vendor MADC, diploids | 92.0% | 92.6% | 92.5% |
-  | Tetraploids pooled from real diploid reads, 50 reads | 90.6% | 89.7% | 90.5% |
-  | Hexaploids pooled from real diploid reads, 50 reads | 77.6% | 69.8% | 77.6% |
-  | Delta smelt (diploid), against alignment-based genotypes | 99.4% | 99.3% | 99.3% |
-
-  On the potato data half to two thirds of the records are called with their bias; on the pooled
-  reads, which have none, fewer than 2 in 100 are. `auto` takes as long as `fit`. It is not the
-  default because of that time, and because on the smelt data it stays 0.1 points under `off`:
-  there 127 of 946 records keep a bias and are called a little worse with it.
-
-- For families, use it with `--prior norm`. With `--prior hwe`, `fit` lost up to 4 points on
-  simulated F1 families without bias, which `auto` avoided; on simulated F1 families with bias
-  `norm` was 1 to 6 points ahead of `hwe` under either setting. On the real alfalfa and potato
-  families the two priors were within 0.2 points.
-- On biased polyploid data it brought `call` level with updog (within 0.7 points of genotypes
-  correct on seven updog-simulated tables), where calling without it was 8 to 20 points behind. On
-  the alfalfa populations it raised agreement with published dosages from 90% to 92%.
-- Against the potato array genotypes, which do not come from a read-count caller, it raised the
-  share of matching dosages from 92.3% to 96.6%, where updog reached 96.7%. At the markers updog
-  found biased the share rose from 80% to 95%. On the whole deposit of that study (703 clones,
-  1,862 markers, none selected) the share rose from 82.8% to 87.5%, where the study's own updog
-  genotypes have 87.2%; and on the study's vendor MADC of diploid and tetraploid samples from
-  89.1% to 91.9%, where the study's genotypes have 91.8%.
-- On real diploid reads (96 delta smelt) it lowered agreement with alignment-based genotypes by
-  0.15 points at targets and 0.3 at off-target SNPs.
-- On outbred tetraploid data without bias `fit` cost up to 1.5 points. `auto` cost nothing in one
-  population or an F1 family, where it kept no bias and has the genotypes of `off`, and 1.4 points
-  in two subpopulations with `--prior hwe`, where it kept 9 of 100.
-- `auto` needs depth and a clear bias to keep it. On updog-simulated biased tetraploids at 150
-  reads it kept three quarters of the biases and was 0.3 points behind `fit` (95.9% against 96.2%,
-  from 82.3% without a bias). At 25 reads it kept 4 in 10 and was 1.8 points behind (82.8% against
-  84.6%, from 76.3%). On hexaploids at 150 reads it kept half and was 3.5 behind (83.0% against
-  86.5%, from 67.3%).
-- Do not use `fit` for inbred lines. A bias changes only what a heterozygote shows, so there is
-  nothing for it to correct, and under a prior that expects heterozygotes the fit runs to a limit
-  of the search, where homozygous samples pass for heterozygous ones. On simulated inbred
-  tetraploids every record's bias ended at a limit: with `fit`, 71.7% of dosages were right
-  against 97.4% without a bias (90.3% against 98.6% with `--prior norm`). `auto` rejects such a
-  bias, warns, and has the genotypes of a run without a bias. Either way, give `--selfing-rate`:
-  99.6% at 0.95 and 99.9% at 0.99. Samples that are half inbred lost 0.7 points with `auto`, where
-  `fit` lost 2.4.
-- Check `fit` in hexaploids with widely scattered counts. On one such simulated table without
-  bias it lost 1.5 points with `--prior hwe`, where `auto` kept no bias and lost nothing. On
-  hexaploids pooled from real reads `auto` lost nothing either.
+`auto` is not the default because it takes as long as `fit`, and because on diploid smelt it
+stayed 0.1 points under `off`.
 
 ## Filters
 

@@ -145,6 +145,69 @@ not, so it is off by default.
 
 See [`call`](../commands/call.md).
 
+### Priors
+
+**`norm` in families.** It helped in simulations and at low depth, and not on real families at
+high depth:
+
+- Simulated tetraploid F1 families: 90.7% of dosages right against 89.5% with `hwe`. With a bias
+  fitted, 1 to 6 points ahead of `hwe`.
+- The two F1 populations of the polyRAD paper's benchmark, at about 10 reads: error 0.186 against
+  0.200 (*Miscanthus*, diploid) and 0.385 against 0.409 (potato, tetraploid), level with polyRAD's
+  mapping prior, which is told the parents.
+- Two tetraploid alfalfa F1 populations against published dosages: 90.1% and 89.8% with `norm`,
+  90.9% and 90.0% with `hwe`. With the bias fitted, 92.3% and 91.9% against 92.2% and 91.8%.
+- 85 potato clones of ten families against a SNP array: 92.1% against 92.3%, and 96.57% against
+  96.60% with the bias fitted.
+- In one randomly mating population it was level with `hwe` or up to 0.7 points below.
+
+**`structure`.** It matters at low read depth:
+
+- On simulated tetraploids with 8 reads per sample and marker it called 0.8 to 5.5 points more
+  genotypes correctly than `hwe`, depending on how strong the structure was; with 25 reads 0.5 to
+  2.5 points, and with 150 reads 0.8.
+- On 85 potato clones from ten families, thinned to 10 and 25 reads, the gain against SNP-array
+  genotypes was 0.9 and 0.7 points; at their full depth of about 300 reads there was none.
+- Compared with polyRAD's `IteratePopStruct` on the same thirteen tables it called the same share
+  of genotypes correctly or more, by up to 0.7 points. On a table without structure polyRAD's
+  prior lost 3.4 points and `call` chose 0 neighbours.
+- polyRAD models structure with principal components; that approach and a relationship-matrix
+  predictor were tried in place of the neighbours and were no better (see the development
+  record).
+
+**The selfing rate.** On the inbred soybean set of the polyRAD benchmark the error was 0.037 with
+`--selfing-rate 0.95`, as polyRAD has, and 0.157 without. On simulated inbred tetraploids 99.6%
+and 99.9% of dosages were right at 0.95 and 0.99, against 97.4% without.
+
+**Haplotype records.** On simulated microhaplotype tables (3 to 6 alleles per marker, diploid and
+tetraploid; one population, groups and families):
+
+- `hwe` gave the same share of correct genotypes as polyRAD's HWE prior, to within 0.4 points.
+- `structure` was never below `hwe` and gained 1 to 4 points in tetraploids with groups or
+  families.
+- `norm` was never below `hwe`, gained at most 1.7 points, and took two to five times as long.
+- `uniform` was the lowest throughout, by up to 6 points.
+- With the default `--min-marginal-posterior`, 94 to 99% of the genotypes kept were right under
+  `hwe`, `norm` and `structure` alike.
+
+These are simulations with one simulator; there is no published accuracy baseline for haplotype
+calls to compare with, and no real haplotype data with known genotypes has been tested.
+
+### Overdispersion and Background Reads
+
+- In simulated diploids and tetraploids with 20 or more reads per sample both values were
+  recovered (31 of 32 tables). In hexaploids the overdispersion was recovered in 12 of 16 tables
+  and read between 14 and 50 for a simulated 40 in the rest. With 6 to 25 reads per sample the
+  background rate was still recovered, an overdispersion of 40 read as 30 to 75, and one of 150
+  as anything from 100 to 500: scatter that small cannot be measured at that depth.
+- The estimate gives every dosage its own free probability at each marker. With Hardy-Weinberg
+  proportions it was badly off for samples from two subpopulations, and with those or the `norm`
+  shape, neither of which can describe an excess of homozygotes, it failed for inbred samples.
+- polyRAD's `TestOverdispersion` chose values well below the true one on simulated tetraploid and
+  hexaploid counts. On 85 tetraploid potato clones it chose 14 where `call` estimates 75, and
+  polyRAD's HWE model with 14 matched a SNP array for 91.2% of dosages, against 92.3% for `call`
+  with its defaults and 87.9% for polyRAD's own default of 9.
+
 ## Genome Paralog Filter (`filter-paralogs`)
 
 - **Lettuce 3K DArTag** (the panel the filter was built on): the rows kept or dropped agreed with a
