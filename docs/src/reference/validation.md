@@ -150,8 +150,12 @@ See [`call`](../commands/call.md).
 **`norm` in families.** It helped in simulations and at low depth, and not on real families at
 high depth:
 
-- Simulated tetraploid F1 families: 90.7% of dosages right against 89.5% with `hwe`. With a bias
-  fitted, 1 to 6 points ahead of `hwe`.
+- Simulated tetraploid F1 families at 20 to 60 reads, five draws: 91.0% of dosages right against
+  90.1% with `hwe`, and ahead in every draw (0.6 to 1.5 points). On a biased panel it was 2.5
+  points ahead with `--allele-bias auto` and 4.4 with `fit`; on updog's simulator at 150 reads,
+  7.6 and 10.2 (91.5% and 91.6% against 84.0% and 81.4%).
+- With `norm`, `auto` kept no bias on F1 families without one; with `hwe` it kept a bias at 2
+  markers in 100 and lost 0.7 points.
 - The two F1 populations of the polyRAD paper's benchmark, at about 10 reads: error 0.186 against
   0.200 (*Miscanthus*, diploid) and 0.385 against 0.409 (potato, tetraploid), level with polyRAD's
   mapping prior, which is told the parents.
@@ -159,7 +163,9 @@ high depth:
   90.9% and 90.0% with `hwe`. With the bias fitted, 92.3% and 91.9% against 92.2% and 91.8%.
 - 85 potato clones of ten families against a SNP array: 92.1% against 92.3%, and 96.57% against
   96.60% with the bias fitted.
-- In one randomly mating population it was level with `hwe` or up to 0.7 points below.
+- In one randomly mating population (five draws) it was level with `hwe` where the data have no
+  bias, and 0.5 to 0.7 points below where they have one and it is not fitted or `auto` is used.
+- On simulated inbred lines without a selfing rate it was 1.1 points ahead of `hwe`.
 
 **`structure`.** It matters at low read depth:
 
