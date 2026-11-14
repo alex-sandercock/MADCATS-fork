@@ -9,7 +9,8 @@
 
 `madcats` is a command-line tool that turns targeted-sequencing FASTQs into MADC microhaplotype
 count tables. It counts the alleles a panel was designed for and finds additional ones in the reads.
-The output is a raw MADC table, which goes through HapApp before dosage calling and VCF conversion.
+The output is a raw MADC table, which goes through HapApp before dosage calling and VCF conversion,
+or straight to `madcats call` for genotypes and VCFs.
 
 The same code handles DArTag, AgriSeq (Ion Torrent), GT-seq, rhAmpSeq and Flex-Seq capture data.
 It needs only the Python 3 standard library. Every analysis threshold is a command-line option, and
@@ -34,9 +35,9 @@ each run writes a JSON file recording its parameters and read counts.
   paired-end reads (`madcats merge-pairs`).
 - Writes raw MADC tables for HapApp, which prepares them for BIGr and other tools. Each row also
   lists its variants and marker type.
-- Optional genome-based paralog filter (`madcats filter-paralogs`, needs `pip install 'madcats[genome]'`)
 - Calls diploid and polyploid genotypes from the MADC (`madcats call`) and writes VCFs of the
-  designed targets, of all tag variants, or of whole microhaplotypes
+  designed targets, of all tag variants, or of whole microhaplotypes.
+- Optional genome-based paralog filter (`madcats filter-paralogs`, needs `pip install 'madcats[genome]'`)
   for panels where co-amplified paralogous copies inflate heterozygosity; works on vendor and HapApp
   fixed-allele-ID MADCs too.
 - Pure Python with no dependencies for everything else. Runs samples in parallel and caches per-sample results, so
@@ -151,6 +152,7 @@ The design rationale and version-by-version measurements behind every default ar
 | `madcats window-scan` | Sweep candidate tag lengths and recommend one from the project's own reads |
 | `madcats generate` | Generate the MADC count table |
 | `madcats validate` | Compare a generated MADC against a reference MADC |
+| `madcats filter-paralogs` | Drop or flag MADC rows that a reference genome places at another locus (needs `mappy`) |
 | `madcats call` | Call genotypes from a MADC and write target, all-variant or haplotype VCFs |
 
 Run `madcats <command> --help` for full options.
