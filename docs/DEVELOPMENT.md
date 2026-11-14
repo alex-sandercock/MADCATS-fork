@@ -3035,6 +3035,185 @@ far the mean probability `call` gives its called dosage lies above that share
   built for them: a record `auto` leaves without a bias is then the record
   `off` writes, on every table.
 
+**Replicates and calibration of `off`, `fit` and `auto`.** The comparisons
+above are one draw per scenario, and several were made before the rules were
+final. With the rules as built, three sets of simulated tables were called
+with each setting of `--allele-bias`, without filters:
+
+- ten scenarios drawn with stated seeds, five draws each: the model of the
+  first group of tables (100 markers, 150 samples, 20 to 60 reads, an
+  overdispersion of 40, 0.5% of reads showing the wrong allele, and where
+  marked a bias of 2^N(0, 0.5) per marker), tetraploid and hexaploid;
+- seven scenarios of updog's simulator, four draws each (150 markers, 150
+  samples, 150 reads or 25 at low depth, a bias of exp(N(0, 0.5)));
+- eight scenarios of polyRAD's simulator, four draws each, three of them
+  with diploid, tetraploid and hexaploid samples in one table.
+
+Share of dosages right with `--prior hwe`, as the mean over the draws, and
+for `auto` against `off` the difference within each draw:
+
+| Scenario | Draws | `off` | `auto` | `fit` | `auto` minus `off`: mean (lowest to highest draw) | Biases `auto` used |
+|---|---|---|---|---|---|---|
+| 4x random mating | 5 | 89.69% | 89.69% | 89.23% | +0.00 (+0.00 to +0.00) | 0% |
+| 4x random mating, biased | 5 | 83.90% | 86.98% | 88.68% | +3.08 (+2.71 to +3.61) | 24% |
+| 4x F1 | 5 | 90.05% | 89.37% | 85.29% | -0.68 (-1.17 to -0.09) | 2% |
+| 4x F1, biased | 5 | 85.56% | 86.58% | 87.05% | +1.02 (-0.07 to +2.21) | 27% |
+| 4x two subpopulations | 5 | 89.65% | 89.02% | 87.63% | -0.63 (-0.79 to -0.37) | 4% |
+| 4x two subpopulations, biased | 5 | 83.63% | 85.52% | 87.12% | +1.89 (+0.70 to +2.39) | 25% |
+| 4x inbred lines | 5 | 97.34% | 97.34% | 73.71% | +0.00 (+0.00 to +0.00) | 0% |
+| 4x inbred lines, biased | 5 | 97.16% | 97.16% | 71.60% | +0.00 (+0.00 to +0.00) | 0% |
+| 6x random mating | 5 | 75.02% | 75.02% | 73.26% | +0.00 (+0.00 to +0.00) | 0% |
+| 6x random mating, biased | 5 | 66.69% | 67.83% | 72.56% | +1.14 (+0.45 to +1.83) | 7% |
+| updog 4x random mating | 4 | 96.99% | 96.99% | 96.91% | +0.00 (+0.00 to +0.00) | 0% |
+| updog 4x random mating, biased | 4 | 84.80% | 96.25% | 96.46% | +11.45 (+9.80 to +13.47) | 72% |
+| updog 4x random mating, biased, low depth | 4 | 76.10% | 82.82% | 84.70% | +6.72 (+5.63 to +8.03) | 35% |
+| updog 4x `norm` genotypes, biased | 4 | 82.47% | 95.35% | 95.74% | +12.88 (+11.46 to +14.55) | 70% |
+| updog 4x F1, biased | 4 | 79.28% | 83.95% | 81.44% | +4.67 (-0.99 to +8.21) | 70% |
+| updog 2x random mating, biased | 4 | 99.63% | 99.98% | 99.98% | +0.35 (+0.24 to +0.63) | 75% |
+| updog 6x random mating, biased | 4 | 66.73% | 82.56% | 85.83% | +15.82 (+14.68 to +19.05) | 52% |
+| polyRAD 4x outbred | 4 | 88.94% | 88.94% | 88.53% | +0.00 (+0.00 to +0.00) | 0% |
+| polyRAD 4x outbred, low depth | 4 | 82.39% | 82.39% | 81.91% | +0.00 (+0.00 to +0.00) | 0% |
+| polyRAD 4x, inbreeding 0.5 | 4 | 93.47% | 92.68% | 90.61% | -0.79 (-1.11 to -0.60) | 12% |
+| polyRAD 2x outbred | 4 | 99.94% | 99.94% | 99.94% | +0.00 (+0.00 to +0.00) | 0% |
+| polyRAD 6x outbred | 4 | 73.68% | 73.68% | 72.38% | +0.00 (+0.00 to +0.00) | 0% |
+| polyRAD 2x, 4x and 6x, one population, 25 reads | 4 | 85.49% | 85.49% | 85.28% | +0.00 (+0.00 to +0.00) | 0% |
+| polyRAD 2x, 4x and 6x, three groups, 25 reads | 4 | 86.81% | 86.80% | 86.54% | -0.01 (-0.03 to +0.00) | 0% |
+| polyRAD 2x, 4x and 6x, three groups, 8 reads | 4 | 79.33% | 79.31% | 79.04% | -0.02 (-0.10 to +0.00) | 0% |
+
+Calibration. The probability `call` gives a called genotype is read from its
+GQ. The figure is the mean of that probability over the called genotypes
+minus the share of them that are right, in points, as the mean over the
+draws: positive when the calls are over-confident.
+
+| Scenario | `off` | `auto` | `fit` |
+|---|---|---|---|
+| 4x random mating | -0.1 | -0.1 | +0.6 |
+| 4x random mating, biased | +1.9 | -0.3 | +1.1 |
+| 4x F1 | -0.3 | +0.2 | +3.0 |
+| 4x F1, biased | +2.4 | +1.1 | +2.3 |
+| 4x two subpopulations | +0.5 | +1.2 | +2.9 |
+| 4x two subpopulations, biased | +2.1 | +1.3 | +2.7 |
+| 4x inbred lines | +0.4 | +0.4 | +14.4 |
+| 4x inbred lines, biased | +0.5 | +0.5 | +14.0 |
+| 6x random mating | -0.5 | -0.5 | +4.0 |
+| 6x random mating, biased | +4.6 | +3.7 | +5.0 |
+| updog 4x random mating | +0.3 | +0.3 | +0.4 |
+| updog 4x random mating, biased | +5.4 | -0.5 | +0.5 |
+| updog 4x random mating, biased, low depth | +4.8 | -0.2 | +1.1 |
+| updog 4x `norm` genotypes, biased | +6.4 | -0.6 | +0.8 |
+| updog 4x F1, biased | +8.6 | +11.1 | +14.7 |
+| updog 2x random mating, biased | 0.0 | 0.0 | 0.0 |
+| updog 6x random mating, biased | +10.8 | 0.0 | +2.2 |
+| polyRAD 4x outbred | -0.2 | -0.2 | +0.4 |
+| polyRAD 4x outbred, low depth | 0.0 | 0.0 | +0.5 |
+| polyRAD 4x, inbreeding 0.5 | +1.4 | +2.3 | +4.7 |
+| polyRAD 2x outbred | 0.0 | 0.0 | 0.0 |
+| polyRAD 6x outbred | -0.1 | -0.1 | +1.4 |
+| polyRAD 2x, 4x and 6x, one population, 25 reads | +0.2 | +0.2 | +0.7 |
+| polyRAD 2x, 4x and 6x, three groups, 25 reads | +0.3 | +0.4 | +1.6 |
+| polyRAD 2x, 4x and 6x, three groups, 8 reads | +0.7 | +0.8 | +2.1 |
+
+- Where the data have no bias and the samples are one population or inbred
+  lines, `auto` is `off` in every draw: no record keeps a bias, and the
+  genotypes are the same. That holds for diploids, tetraploids and
+  hexaploids from all three simulators, and for diploid, tetraploid and
+  hexaploid samples in one table, where `fit` loses up to 1.8 points; and
+  for inbred lines, where `fit` loses 24 to 26. The polyRAD hexaploid
+  scenario is the one on which `auto` was 1.9 points under `off` before a
+  record without its bias was given the read model of `off`. With three
+  groups of samples of mixed ploidy `auto` is within 0.1 points of `off`.
+- Where the data have a bias, what `auto` keeps of the gain of `fit` goes
+  with the depth and the size of the biases: 97 to 100% at 150 reads in
+  diploids and tetraploids and 83% in hexaploids, 78% at 25 reads, and at 20
+  to 60 reads with the smaller biases 54 to 68% in tetraploids and 19% in
+  hexaploids, where it uses 7 records in 100.
+- `auto` is the best calibrated of the three where the samples mate at
+  random and the data have a bias: within 0.6 points on the five such
+  tetraploid and diploid scenarios and exact on updog's hexaploids, where
+  `off` is over-confident by up to 10.8 points and `fit` by up to 2.2. The
+  exception is the hexaploids at 20 to 60 reads, where it uses few biases
+  and stays near `off` (+3.7 against +4.6).
+- In F1 families, two subpopulations and half-inbred samples without bias,
+  `auto` with `--prior hwe` uses a bias at 2, 4 and 12 records in 100 and
+  loses 0.7, 0.6 and 0.8 points (`fit`: 4.8, 2.0 and 2.9). The prior does
+  not fit such samples, and a bias can make up for it; none of these biases
+  ends at a limit of the search, so the limit rule does not see them. On
+  updog's F1 tables with bias every setting is over-confident under `hwe`,
+  by 9 to 15 points.
+
+The same with `--prior norm`, on the scenarios it was run on:
+
+| Scenario | Draws | `off` | `auto` | `fit` | `auto` minus `off`: mean (lowest to highest draw) | Biases `auto` used |
+|---|---|---|---|---|---|---|
+| 4x random mating | 5 | 89.66% | 89.66% | 89.15% | +0.00 (+0.00 to +0.00) | 0% |
+| 4x random mating, biased | 5 | 83.37% | 86.26% | 88.56% | +2.89 (+2.37 to +3.77) | 20% |
+| 4x F1 | 5 | 91.02% | 91.02% | 90.51% | +0.00 (+0.00 to +0.00) | 0% |
+| 4x F1, biased | 5 | 85.52% | 89.09% | 91.42% | +3.57 (+2.01 to +4.93) | 24% |
+| 4x two subpopulations | 5 | 89.94% | 89.85% | 88.79% | -0.09 (-0.18 to +0.00) | 1% |
+| 4x two subpopulations, biased | 5 | 83.84% | 86.22% | 88.34% | +2.38 (+1.23 to +2.86) | 19% |
+| 4x inbred lines | 5 | 98.43% | 98.43% | 90.49% | +0.00 (+0.00 to +0.00) | 0% |
+| updog 4x F1, biased | 4 | 78.68% | 91.51% | 91.64% | +12.83 (+9.77 to +16.21) | 71% |
+| polyRAD 4x, inbreeding 0.5 | 4 | 94.07% | 93.99% | 93.05% | -0.09 (-0.16 to +0.00) | 2% |
+
+| Scenario | `off` | `auto` | `fit` |
+|---|---|---|---|
+| 4x random mating | 0.0 | 0.0 | +0.7 |
+| 4x random mating, biased | +2.8 | +0.5 | +1.3 |
+| 4x F1 | +0.4 | +0.4 | +1.1 |
+| 4x F1, biased | +4.6 | +1.9 | +1.2 |
+| 4x two subpopulations | +0.1 | +0.2 | +1.5 |
+| 4x two subpopulations, biased | +1.9 | +0.3 | +1.2 |
+| 4x inbred lines | +0.1 | +0.1 | -7.4 |
+| updog 4x F1, biased | +12.4 | +4.9 | +5.6 |
+| polyRAD 4x, inbreeding 0.5 | +0.8 | +0.9 | +2.2 |
+
+- With `norm`, `auto` on F1 families without bias uses no record's bias and
+  is `off` in every draw, and in two subpopulations it loses 0.1 points.
+- `norm` is ahead of `hwe` in F1 families: by 1.0 point without a bias (0.6
+  to 1.5 over the draws), by 2.5 with `auto` and 4.4 with `fit` where the
+  data have a bias, and on updog's F1 tables by 7.6 with `auto` and 10.2
+  with `fit` (91.5% and 91.6% against 84.0% and 81.4%). In two
+  subpopulations it is 0.3 ahead without a bias and 0.7 with `auto`. On
+  inbred lines it is 1.1 ahead without a selfing rate.
+- In one randomly mating population `norm` is level with `hwe` where the
+  data have no bias (0.03 points below) and 0.5 to 0.7 below it where they
+  have one and it is not fitted or `auto` is used; with `fit` it is 0.1
+  below.
+- On the half-inbred samples, where `auto` with `hwe` loses 0.8 points, a
+  prior that fits them removes the loss: with `norm`, `auto` uses 2 records
+  in 100 and is 0.1 points under its `off`, which is itself 0.6 above
+  `hwe`. With `--prior hwe --selfing-rate 0.5`, 93.91% without a bias
+  (`hwe` alone: 93.47%) and 93.70% with `auto`, which uses 2 to 7 records
+  of 150.
+- `--prior structure`, which takes no bias, is 0.6 points ahead of `hwe` in
+  two subpopulations without bias and 1.1 with (five draws each, 40
+  neighbours chosen in each), and equals `hwe` in one F1 family, where it
+  chose no neighbours in any draw.
+
+The real data sets with the rules as built, `--prior hwe`:
+
+| Data set | `off` | `auto` | `fit` | Biases `auto` used | Calibration: `off`, `auto`, `fit` |
+|---|---|---|---|---|---|
+| Potato, 85 clones, against the array | 92.26% | 96.37% | 96.59% | 785 of 1,544 | +4.8, +2.3, +2.5 |
+| Potato vendor MADC | 89.14% | 91.76% | 91.91% | 2,566 of 3,904 | |
+| Potato vendor MADC, diploids | 92.02% | 92.51% | 92.61% | | |
+| Potato vendor MADC, tetraploids | 86.41% | 91.06% | 91.25% | | |
+| Delta smelt targets | 99.41% | 99.27% | 99.28% | 127 of 946 | +0.5, +0.6, +0.6 |
+| Delta smelt off-target | 99.70% | 99.43% | 99.39% | | |
+| Pooled tetraploids, 50 reads, targets, three draws | 90.44% | 90.35% | 89.47% | 15, 16 and 29 of 946 | +1.1, +1.2, +2.3 |
+| Pooled hexaploids, 50 reads, targets, three draws | 77.79% | 77.79% | 71.03% | 3, 10 and 12 of 944 | +0.8, +0.8, +8.3 |
+
+- On the pooled polyploids, whose reads have no bias, `auto` is 0.1 points
+  under `off` in each tetraploid draw and equal to it at the targets in each
+  hexaploid draw, where `fit` loses 0.9 to 1.1 and 6.2 to 7.8.
+- On the potato clones `auto` halves the over-confidence of `off` against
+  the array (the array and the reads also differ for reasons a caller cannot
+  see, so the gap is not all the caller's). On the pooled reads its
+  calibration is that of `off`, and `fit` is over-confident by 2 and 8
+  points.
+- Rejected at a limit under `auto`: 4 records on the potato clones, 25 on
+  the vendor MADC, 10 on smelt and 14 to 23 on the pooled tables.
+
 **The structure prior (`--prior structure`).** polyRAD's `IteratePopStruct`
 gives each sample its own allele frequencies: it runs a principal component
 analysis of the genotype estimates of all markers, regresses every allele on

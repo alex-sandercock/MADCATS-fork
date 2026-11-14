@@ -331,6 +331,9 @@ When to use it:
 - **Inbred lines: neither.** A bias has nothing to correct in them. `fit` miscalled a quarter of
   their genotypes on simulated tables. `auto` rejects their biases, warns, and has the genotypes
   of `off`. Give `--selfing-rate`.
+- **Partly inbred samples: with `--selfing-rate` or `--prior norm`.** On simulated half-inbred
+  tetraploids without bias, `auto` with the plain `hwe` prior kept a bias at 12 markers in 100 and
+  lost 0.8 points. With `--selfing-rate 0.5` it lost 0.2, and with `norm` 0.1.
 - **Families: with `--prior norm`.** On simulated F1 families without bias, `auto` with `hwe` kept
   a bias at 2 markers in 100 and lost 0.7 points; with `norm` it kept none. With bias, `norm` was
   2.5 points ahead of `hwe` under `auto` and 4.4 under `fit`. On real alfalfa and potato families

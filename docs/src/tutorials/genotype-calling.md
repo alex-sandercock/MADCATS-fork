@@ -90,7 +90,7 @@ Change this when one of these describes your samples:
 
 | Your samples | Change | Why |
 |--------------|--------|-----|
-| Inbred lines, doubled haploids, selfing species | `--selfing-rate 0.95` (up to `0.99`), and leave the bias off | A bias has nothing to correct where there are no heterozygotes, and the default prior expects heterozygotes |
+| Inbred lines, doubled haploids, selfing species | `--selfing-rate`: `0.95` to `0.99` for inbred lines, the species' own rate for partly selfing ones. Leave the bias off for inbred lines | The default prior expects the heterozygotes of random mating, and a bias has nothing to correct where there are none |
 | Families (F1, half-sibs) | Add `--prior norm` | The default prior assumes random mating. It takes two to five times as long |
 | Hexaploids, or fewer than about 50 reads, on a panel known to be biased | `--allele-bias fit` | `auto` keeps a bias only where it is clear, which takes depth; `fit` uses every bias |
 | Subpopulations at 25 reads or fewer, on a panel without bias | `--prior structure` | Each sample's prior comes from the samples most like it. It cannot be combined with a bias |

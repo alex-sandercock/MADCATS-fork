@@ -183,7 +183,9 @@ high depth:
 
 **The selfing rate.** On the inbred soybean set of the polyRAD benchmark the error was 0.037 with
 `--selfing-rate 0.95`, as polyRAD has, and 0.157 without. On simulated inbred tetraploids 99.6%
-and 99.9% of dosages were right at 0.95 and 0.99, against 97.4% without.
+and 99.9% of dosages were right at 0.95 and 0.99, against 97.4% without. On simulated half-inbred
+tetraploids (four draws) 93.9% were right with `--selfing-rate 0.5`, against 93.5% without and
+94.1% with `--prior norm`.
 
 **Haplotype records.** On simulated microhaplotype tables (3 to 6 alleles per marker, diploid and
 tetraploid; one population, groups and families):
@@ -248,9 +250,13 @@ Simulated tables, as the mean over five draws (four for updog's simulator):
 - **Inbred lines.** A bias changes only what a heterozygote shows. Under a prior that expects
   heterozygotes, every fit ran to a limit of the search and homozygous samples passed for
   heterozygous ones. `auto` rejects a bias at a limit; `fit` does not.
-- **Families and subpopulations without bias.** With `--prior hwe`, `auto` kept a bias at 2 to 4
-  markers in 100 and lost 0.6 to 0.7 points. With `--prior norm` it kept none in F1 families and
-  lost 0.1 points in subpopulations.
+- **Families, subpopulations and partly inbred samples without bias.** The plain `hwe` prior
+  does not fit them, and a bias can make up for it: `auto` kept a bias at 2, 4 and 12 markers in
+  100 and lost 0.7, 0.6 and 0.8 points. With `--prior norm` it kept none in F1 families and lost
+  0.1 points in subpopulations and in half-inbred samples; with `--selfing-rate 0.5` it lost 0.2
+  in half-inbred samples. None of these biases ends at a search limit.
+- **Mixed ploidy.** With diploids, tetraploids and hexaploids in one table (polyRAD's simulator,
+  no bias), `auto` was within 0.1 points of `off` in every draw.
 - **Real diploid reads.** On 96 delta smelt `auto` and `fit` were 0.1 points under `off` at
   targets and 0.3 at off-target SNPs.
 
