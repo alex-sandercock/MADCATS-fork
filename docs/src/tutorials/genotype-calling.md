@@ -76,19 +76,35 @@ Clone_044	6
 
 ## 4. Choose the Settings for Your Samples
 
-The defaults are for one outbred population or a diversity panel. Four kinds of samples do better
-with a change:
+Start with the defaults for diploids, and add `--allele-bias auto` for polyploids:
 
-| Your samples | Change |
-|--------------|--------|
-| Polyploids on an amplicon panel such as DArTag | Add `--allele-bias auto` |
-| Inbred lines, doubled haploids, selfing species | Add `--selfing-rate 0.95` (up to `0.99`), and no bias |
-| Families | Consider `--prior norm` |
-| Subpopulations or families at 25 reads or fewer | Consider `--prior structure` |
+```bash
+madcats call --madc project_MADC.csv --ploidy 4 --allele-bias auto --output-prefix results/project
+```
 
-The first two are worth several points of accuracy. The last two helped in some tests and made no
-difference in others; [Which settings to use](../commands/call.md#which-settings-to-use) has the
-measurements for all four.
+`call` estimates how the read counts scatter from the table itself. With `auto` it also fits an
+allelic bias at every marker, and uses it only where the bias is clear. Markers left without a
+bias are called exactly as without the option.
+
+Change this when one of these describes your samples:
+
+| Your samples | Change | Why |
+|--------------|--------|-----|
+| Inbred lines, doubled haploids, selfing species | `--selfing-rate 0.95` (up to `0.99`), and leave the bias off | A bias has nothing to correct where there are no heterozygotes, and the default prior expects heterozygotes |
+| Families (F1, half-sibs) | Add `--prior norm` | The default prior assumes random mating. It takes two to five times as long |
+| Hexaploids, or fewer than about 50 reads, on a panel known to be biased | `--allele-bias fit` | `auto` keeps a bias only where it is clear, which takes depth; `fit` uses every bias |
+| Subpopulations at 25 reads or fewer, on a panel without bias | `--prior structure` | Each sample's prior comes from the samples most like it. It cannot be combined with a bias |
+
+[Which settings to use](../commands/call.md#which-settings-to-use) has the measurements behind
+each row.
+
+If you come from updog or polyRAD:
+
+| You used | The same model in `call` |
+|----------|--------------------------|
+| updog, `norm` | `--prior norm --allele-bias fit`. updog always fits a bias |
+| polyRAD, `IterateHWE` | The defaults. polyRAD's own settings are `--overdispersion 9 --contamination-rate 0.001 --background-rate 0` |
+| polyRAD, `IteratePopStruct` | `--prior structure`. The method differs, and the purpose is the same |
 
 ## 5. Write Other Record Types
 
